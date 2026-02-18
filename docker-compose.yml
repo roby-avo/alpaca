@@ -1,0 +1,49 @@
+services:
+  quickwit:
+    image: quickwit/quickwit:${ALPACA_QUICKWIT_VERSION:-0.8.1}
+    command: ["run"]
+    ports:
+      - "${ALPACA_QUICKWIT_PORT:-7280}:7280"
+    volumes:
+      - type: bind
+        source: ${ALPACA_QUICKWIT_DATA_DIR:-./data/quickwit}
+        target: /quickwit/qwdata
+
+  api:
+    build:
+      context: .
+    image: alpaca:latest
+    working_dir: /workspace
+    command: ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      - quickwit
+    environment:
+      ALPACA_DUMP_PATH: ${ALPACA_DUMP_PATH:-/mnt/input/latest-all.json.bz2}
+      ALPACA_NER_TYPES_PATH: ${ALPACA_NER_TYPES_PATH:-}
+      ALPACA_LABELS_DB_PATH: ${ALPACA_LABELS_DB_PATH:-/workspace/data/output/wikidata_labels.sqlite}
+      ALPACA_BOW_OUTPUT_PATH: ${ALPACA_BOW_OUTPUT_PATH:-/workspace/data/output/bow_docs.jsonl.gz}
+      ALPACA_QUICKWIT_URL: ${ALPACA_QUICKWIT_URL:-http://quickwit:7280}
+      ALPACA_QUICKWIT_INDEX_ID: ${ALPACA_QUICKWIT_INDEX_ID:-wikidata_entities}
+      ALPACA_QUICKWIT_INDEX_CONFIG_PATH: ${ALPACA_QUICKWIT_INDEX_CONFIG_PATH:-/workspace/quickwit/wikidata-entities-index-config.json}
+    ports:
+      - "${ALPACA_API_PORT:-8000}:8000"
+    volumes:
+      - type: bind
+        source: ${ALPACA_INPUT_DIR:-./data/input}
+        target: /mnt/input
+        read_only: true
+      - type: bind
+        source: ${ALPACA_OUTPUT_DIR:-./data/output}
+        target: /workspace/data/output
+      - type: bind
+        source: ./src
+        target: /workspace/src
+        read_only: true
+      - type: bind
+        source: ./scripts
+        target: /workspace/scripts
+        read_only: true
+      - type: bind
+        source: ./quickwit
+        target: /workspace/quickwit
+        read_only: true
