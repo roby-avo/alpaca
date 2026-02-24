@@ -1,22 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
-from .build_bow_docs import run as run_bow_docs
-from .build_labels_db import run as run_labels_db
-from .build_quickwit_index import run as run_quickwit_index
+from .build_elasticsearch_index import run as run_elasticsearch_index
+from .build_postgres_entities import run_pass1 as run_postgres_pass1
+from .build_postgres_entities import run_pass2 as run_postgres_pass2
 from .common import (
     parse_language_allowlist,
-    resolve_bow_output_path,
     resolve_dump_path,
-    resolve_labels_db_path,
-    resolve_ner_types_path,
-    resolve_quickwit_index_config_path,
-    resolve_quickwit_index_id,
-    resolve_quickwit_url,
+    resolve_elasticsearch_index,
+    resolve_elasticsearch_url,
+    resolve_postgres_dsn,
 )
-from .quickwit_client import QuickwitClientError
+from .elasticsearch_client import ElasticsearchClientError
+from .postgres_store import PostgresStoreError
 
 
 def parse_non_negative_int(raw: str) -> int:
@@ -24,7 +23,6 @@ def parse_non_negative_int(raw: str) -> int:
         value = int(raw)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("must be an integer") from exc
-
     if value < 0:
         raise argparse.ArgumentTypeError("must be >= 0")
     return value
@@ -42,7 +40,6 @@ def parse_non_negative_float(raw: str) -> float:
         value = float(raw)
     except ValueError as exc:
         raise argparse.ArgumentTypeError("must be a number") from exc
-
     if value < 0:
         raise argparse.ArgumentTypeError("must be >= 0")
     return value
@@ -51,23 +48,14 @@ def parse_non_negative_float(raw: str) -> float:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the full alpaca preprocessing pipeline: labels DB -> BOW docs -> "
-            "Quickwit index/ingest."
+            "Run the deterministic alpaca pipeline: dump -> Postgres entities (pass1) -> "
+            "Postgres deterministic context build (pass2) -> Elasticsearch indexing."
         )
     )
     parser.add_argument("--dump-path", help="Input dump path (.json/.json.gz/.json.bz2).")
-    parser.add_argument("--labels-db-path", help="Output labels SQLite path.")
-    parser.add_argument("--bow-output-path", help="Output BOW JSONL(.gz) path.")
-    parser.add_argument(
-        "--ner-types-path",
-        help=(
-            "Optional NER type map (.jsonl/.jsonl.gz) with records "
-            "{\"id\":...,\"coarse_types\":[...],\"fine_types\":[...]}."
-        ),
-    )
-    parser.add_argument("--index-config-path", help="Quickwit index config JSON path.")
-    parser.add_argument("--quickwit-url", help="Quickwit base URL.")
-    parser.add_argument("--index-id", help="Quickwit index ID.")
+    parser.add_argument("--postgres-dsn", help="Postgres DSN.")
+    parser.add_argument("--elasticsearch-url", help="Elasticsearch base URL.")
+    parser.add_argument("--elasticsearch-index", help="Elasticsearch index name.")
 
     parser.add_argument(
         "--limit",
@@ -76,185 +64,147 @@ def parse_args() -> argparse.Namespace:
         help="Entity parse limit for smoke runs (0 = no limit).",
     )
     parser.add_argument(
-        "--labels-batch-size",
+        "--pass1-batch-size",
         type=parse_positive_int,
         default=5000,
-        help="SQLite insert batch size for labels DB step (default: 5000).",
+        help="Rows per Postgres upsert batch in pass1 (default: 5000).",
     )
     parser.add_argument(
-        "--bow-batch-size",
+        "--context-batch-size",
         type=parse_positive_int,
-        default=5000,
-        help="JSONL write batch size for BOW step (default: 5000).",
+        default=1000,
+        help="Entities per Postgres context batch in pass2 (default: 1000).",
     )
     parser.add_argument(
-        "--quickwit-chunk-bytes",
+        "--es-fetch-batch-size",
+        type=parse_positive_int,
+        default=2000,
+        help="Rows fetched from Postgres per ES indexing read batch (default: 2000).",
+    )
+    parser.add_argument(
+        "--es-chunk-bytes",
         type=parse_positive_int,
         default=8_000_000,
-        help="Max NDJSON payload bytes per Quickwit ingest call.",
+        help="Max bulk NDJSON payload bytes per Elasticsearch request.",
     )
     parser.add_argument(
-        "--quickwit-ingest-limit",
-        type=parse_non_negative_int,
-        default=0,
-        help="Optional document ingest limit for Quickwit step (0 = no limit).",
+        "--workers",
+        type=parse_positive_int,
+        default=max(1, min(8, (os.cpu_count() or 1))),
+        help="Parallel worker count for pass1 transform, pass2 context build, and ES indexing.",
     )
     parser.add_argument(
-        "--quickwit-final-commit",
-        choices=("auto", "wait_for", "force"),
-        default="wait_for",
-        help="Commit mode for final Quickwit ingest chunk.",
+        "--replace-elasticsearch-index",
+        action="store_true",
+        help="Delete and recreate the Elasticsearch index before indexing.",
     )
     parser.add_argument(
         "--wait-timeout-seconds",
         type=parse_non_negative_float,
         default=120.0,
-        help="How long to wait for Quickwit startup.",
+        help="How long to wait for Elasticsearch startup.",
     )
     parser.add_argument(
         "--poll-interval-seconds",
         type=parse_non_negative_float,
         default=2.0,
-        help="Polling interval while waiting for Quickwit.",
+        help="Polling interval while waiting for Elasticsearch.",
     )
     parser.add_argument(
-        "--quickwit-http-timeout-seconds",
+        "--http-timeout-seconds",
         type=parse_positive_int,
         default=120,
-        help="HTTP timeout per Quickwit request.",
+        help="HTTP timeout per Elasticsearch request.",
     )
 
+    parser.add_argument("--skip-pass1", action="store_true", help="Skip Postgres pass1 ingestion.")
     parser.add_argument(
-        "--skip-labels",
+        "--skip-pass2",
         action="store_true",
-        help="Skip labels DB build step.",
+        help="Skip Postgres pass2 deterministic context build.",
     )
     parser.add_argument(
-        "--skip-bow",
+        "--skip-elasticsearch",
         action="store_true",
-        help="Skip BOW docs build step.",
-    )
-    parser.add_argument(
-        "--skip-quickwit",
-        action="store_true",
-        help="Skip Quickwit index/ingest step.",
+        help="Skip Elasticsearch index/ingest step.",
     )
     parser.add_argument(
         "--disable-ner-classifier",
         action="store_true",
-        help="Disable lexical NER typing during labels DB build.",
+        help="Disable lexical NER typing during Postgres pass1.",
     )
     parser.add_argument(
         "--languages",
         default="en",
-        help=(
-            "Comma-separated language allowlist for labels/descriptions in labels DB "
-            "(default: en)."
-        ),
+        help="Comma-separated language allowlist for labels/descriptions (default: en).",
     )
     parser.add_argument(
         "--max-aliases-per-language",
         type=parse_non_negative_int,
         default=8,
-        help="Max aliases stored/emitted per language (default: 8, 0 disables aliases).",
-    )
-    parser.add_argument(
-        "--max-bow-tokens",
-        type=parse_positive_int,
-        default=128,
-        help="Max unique tokens in bow field per entity (default: 128).",
+        help="Max aliases stored per language (default: 8, 0 disables aliases).",
     )
     parser.add_argument(
         "--max-context-object-ids",
         type=parse_non_negative_int,
         default=32,
-        help="Max claim object IDs used to build context per entity (default: 32).",
+        help="Max claim object IDs retained per entity (default: 32).",
     )
-    parser.add_argument(
-        "--max-context-chars",
-        type=parse_non_negative_int,
-        default=640,
-        help="Max chars stored in context field per entity (default: 640).",
-    )
-    parser.add_argument(
-        "--max-doc-bytes",
-        type=parse_positive_int,
-        default=4096,
-        help="Hard cap for serialized docs emitted to JSONL (default: 4096).",
-    )
-    parser.add_argument(
-        "--context-label-cache-size",
-        type=parse_positive_int,
-        default=200_000,
-        help="LRU cache size for linked-object label lookups (default: 200000).",
-    )
-
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-
-    dump_path = resolve_dump_path(args.dump_path)
-    labels_db_path = resolve_labels_db_path(args.labels_db_path)
-    bow_output_path = resolve_bow_output_path(args.bow_output_path)
-    ner_types_path = resolve_ner_types_path(args.ner_types_path)
-    quickwit_url = resolve_quickwit_url(args.quickwit_url)
-    index_id = resolve_quickwit_index_id(args.index_id)
-    index_config_path = resolve_quickwit_index_config_path(args.index_config_path)
-
     try:
+        dump_path = resolve_dump_path(args.dump_path)
+        postgres_dsn = resolve_postgres_dsn(args.postgres_dsn)
+        elasticsearch_url = resolve_elasticsearch_url(args.elasticsearch_url)
+        elasticsearch_index = resolve_elasticsearch_index(args.elasticsearch_index)
         language_allowlist = parse_language_allowlist(args.languages, arg_name="--languages")
-        if not args.skip_labels:
-            labels_status = run_labels_db(
+
+        if not args.skip_pass1:
+            pass1_status = run_postgres_pass1(
                 dump_path=dump_path,
-                db_path=labels_db_path,
-                batch_size=args.labels_batch_size,
+                postgres_dsn=postgres_dsn,
+                batch_size=args.pass1_batch_size,
                 limit=args.limit,
-                disable_ner_classifier=args.disable_ner_classifier,
                 language_allowlist=language_allowlist,
                 max_aliases_per_language=args.max_aliases_per_language,
-            )
-            if labels_status != 0:
-                return labels_status
-
-        if not args.skip_bow:
-            bow_status = run_bow_docs(
-                dump_path=dump_path,
-                labels_db_path=labels_db_path,
-                output_path=bow_output_path,
-                batch_size=args.bow_batch_size,
-                limit=args.limit,
-                ner_types_path=ner_types_path,
-                max_aliases_per_language=args.max_aliases_per_language,
-                max_bow_tokens=args.max_bow_tokens,
                 max_context_object_ids=args.max_context_object_ids,
-                max_context_chars=args.max_context_chars,
-                max_doc_bytes=args.max_doc_bytes,
-                context_label_cache_size=args.context_label_cache_size,
+                disable_ner_classifier=args.disable_ner_classifier,
+                worker_count=args.workers,
             )
-            if bow_status != 0:
-                return bow_status
+            if pass1_status != 0:
+                return pass1_status
 
-        if not args.skip_quickwit:
-            quickwit_status = run_quickwit_index(
-                quickwit_url=quickwit_url,
-                index_id=index_id,
-                index_config_path=index_config_path,
-                docs_path=bow_output_path,
-                chunk_bytes=args.quickwit_chunk_bytes,
-                ingest_limit=args.quickwit_ingest_limit,
-                final_commit=args.quickwit_final_commit,
+        if not args.skip_pass2:
+            pass2_status = run_postgres_pass2(
+                postgres_dsn=postgres_dsn,
+                batch_size=args.context_batch_size,
+                worker_count=args.workers,
+            )
+            if pass2_status != 0:
+                return pass2_status
+
+        if not args.skip_elasticsearch:
+            es_status = run_elasticsearch_index(
+                postgres_dsn=postgres_dsn,
+                elasticsearch_url=elasticsearch_url,
+                index_name=elasticsearch_index,
+                replace_index=args.replace_elasticsearch_index,
+                fetch_batch_size=args.es_fetch_batch_size,
+                chunk_bytes=args.es_chunk_bytes,
+                worker_count=args.workers,
                 wait_timeout_seconds=args.wait_timeout_seconds,
                 poll_interval_seconds=args.poll_interval_seconds,
-                http_timeout_seconds=float(args.quickwit_http_timeout_seconds),
+                http_timeout_seconds=float(args.http_timeout_seconds),
             )
-            if quickwit_status != 0:
-                return quickwit_status
+            if es_status != 0:
+                return es_status
 
         print("Pipeline completed successfully.")
         return 0
-    except (FileNotFoundError, ValueError, QuickwitClientError) as exc:
+    except (FileNotFoundError, ValueError, ElasticsearchClientError, PostgresStoreError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 

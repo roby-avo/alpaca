@@ -20,10 +20,10 @@ data/input/*
 !data/input/.gitkeep
 data/output/*
 !data/output/.gitkeep
-data/quickwit/*
-!data/quickwit/.gitkeep
-data/cache/*
-!data/cache/.gitkeep
+data/elasticsearch/*
+!data/elasticsearch/.gitkeep
+data/postgres/*
+!data/postgres/.gitkeep
 artifacts/
 *.sqlite
 *.sqlite3

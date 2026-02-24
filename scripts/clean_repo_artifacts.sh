@@ -4,23 +4,20 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 
-INCLUDE_CACHE=0
 CONFIRMED=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/clean_repo_artifacts.sh --yes [--include-cache]
+  ./scripts/clean_repo_artifacts.sh --yes
 
 Options:
-  --yes            Required confirmation for destructive cleanup.
-  --include-cache  Also remove data/cache/wikidata_entities/*.
-  -h, --help       Show this help.
+  --yes       Required confirmation for destructive cleanup.
+  -h, --help  Show this help.
 
 Removes generated artifacts under:
   data/input/* (except .gitkeep)
   data/output/* (except .gitkeep)
-  data/quickwit/* (except .gitkeep)
   Python/tool caches (__pycache__, .pytest_cache, .mypy_cache, .ruff_cache)
 EOF
 }
@@ -29,10 +26,6 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --yes)
       CONFIRMED=1
-      shift
-      ;;
-    --include-cache)
-      INCLUDE_CACHE=1
       shift
       ;;
     -h|--help)
@@ -62,11 +55,6 @@ clean_dir_keep_gitkeep() {
 
 clean_dir_keep_gitkeep "${ROOT_DIR}/data/input"
 clean_dir_keep_gitkeep "${ROOT_DIR}/data/output"
-clean_dir_keep_gitkeep "${ROOT_DIR}/data/quickwit"
-
-if [ "${INCLUDE_CACHE}" -eq 1 ]; then
-  clean_dir_keep_gitkeep "${ROOT_DIR}/data/cache"
-fi
 
 find "${ROOT_DIR}" -type d \( -name '__pycache__' -o -name '.pytest_cache' -o -name '.mypy_cache' -o -name '.ruff_cache' \) -prune -exec rm -rf {} +
 

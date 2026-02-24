@@ -11,7 +11,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
 COPY scripts ./scripts
-COPY quickwit ./quickwit
 COPY README.md LICENSE ./
 
 CMD ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -3,4 +3,4 @@ set -eu
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-"$PYTHON_BIN" -m src.evaluate_cached_typing "$@"
+"$PYTHON_BIN" -m src.build_postgres_sample_dump "$@"

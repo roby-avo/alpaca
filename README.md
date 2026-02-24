@@ -2,157 +2,198 @@
 
 ![alpaca logo](assets/alpaca-logo.png)
 
-Streaming Wikidata preprocessing + Quickwit indexing for entity retrieval.
+Deterministic entity lookup over Wikidata-style data using:
+- Postgres (entity store + query cache + live demo sample cache)
+- Elasticsearch (search/index)
+- FastAPI (lookup API)
+- Elasticvue (UI for exploring Elasticsearch data)
 
-This repo is documented around exactly **two high-level run options**.
+## Local Stack (No Auth)
 
-## Requirements
+Local Docker setup is intentionally passwordless / no-auth for dev:
+- Postgres uses `trust`
+- Elasticsearch has security disabled
 
-- Python 3.12
-- Docker + Docker Compose
-- A running Quickwit + API stack:
+## Version Pinning
+
+Image versions are pinned explicitly in `.env.example`.
+
+Create your local `.env` first:
 
 ```bash
+cp .env.example .env
+```
+
+Then adjust versions in `.env` after checking Docker Hub.
+
+## Start Services
+
+```bash
+docker compose pull
 docker compose build api
-docker compose up -d quickwit api
+docker compose up -d postgres elasticsearch elasticvue api
 ```
 
-## Option 1: Live Sample Dump (from live Wikidata entities)
+Useful URLs:
+- API: [http://localhost:8000](http://localhost:8000)
+- Elasticvue (ES UI): [http://localhost:8080](http://localhost:8080)
+- Elasticsearch: [http://localhost:9200](http://localhost:9200)
 
-Use this when you want a fast realistic run on `N` live entity items.
+## Live Demo Sample (Cached in Postgres)
 
-Command:
+There is no filesystem cache for live demo entities anymore.
+Live `Special:EntityData` payloads are cached in Postgres table `sample_entity_cache` by QID.
+
+### One-command flow (recommended)
 
 ```bash
-./scripts/run_live_sample_pipeline_docker.sh --count 1000 --force-refresh
+./scripts/run_live_sample_pipeline_docker.sh --ids Q42,Q90,Q64,Q60
 ```
 
-What it does:
-
-1. Fetches live entities from Wikidata `Special:EntityData` into cache.
-2. Builds a compact sample dump from cached live JSON.
-3. Runs full indexing pipeline (labels DB -> BOW docs -> Quickwit ingest).
-
-Default sample dump path (fixed name regardless of count):
-
-- `data/input/live_sample_dump.json.bz2`
-
-Useful flags:
-
-- `--ids Q42,Q90,Q30` instead of `--count`
-- `--index-id wikidata_entities_live_custom`
-- `--cache-dir ...`
-- `--output-dump ...`
-
-## Option 2: Full Dump Indexing (local downloaded full dump)
-
-Use this for full-scale indexing from your downloaded dump.
-
-Command:
+Or use an IDs file:
 
 ```bash
-./scripts/run_full_dump_pipeline_docker.sh \
-  --dump-path /absolute/path/latest-all.json.bz2
+./scripts/run_live_sample_pipeline_docker.sh --ids-file ./sample_qids.txt
 ```
 
-What it does:
-
-1. Builds labels DB (streaming).
-2. Builds BOW docs (streaming).
-3. Ingests docs into Quickwit.
-4. Rebinds API to the new index.
-5. Verifies indexed docs + API health.
-
-Useful flags:
-
-- `--index-id wikidata_entities_full_custom`
-- `--output-dir ./data/output`
-- `--labels-batch-size 2000`
-- `--bow-batch-size 2000`
-- `--quickwit-chunk-bytes 4000000`
-- `ALPACA_LANGUAGES=en` (default; compact labels DB)
-- `ALPACA_MAX_BOW_TOKENS=128`
-- `ALPACA_MAX_CONTEXT_OBJECT_IDS=32`
-- `ALPACA_MAX_CONTEXT_CHARS=640`
-- `ALPACA_MAX_DOC_BYTES=4096`
-
-## Progress Tracking (every heavy step)
-
-Progress bars (`tqdm`) are shown for:
-
-- live fetch: `wikidata-cache`
-- sample dump build: `cached-sample-dump`
-- labels DB: `labels-db`
-- BOW docs: `bow-docs`
-- Quickwit ingest: `quickwit-ingest`
-
-You also get explicit `Step X/Y` logs in the wrapper scripts.
-
-For streaming steps where the exact total is unknown upfront, Alpaca computes a fast estimate from a small front-of-file sample and file size (constant-time metadata + bounded sample read), then uses that estimate as `tqdm total`.
-For compressed dumps (`.bz2` / `.gz`), estimate quality is improved by sampling consumed **compressed bytes** directly instead of relying on fixed ratio guesses.
-
-## Memory Safety (30 GB RAM VM)
-
-Both pipelines are streaming and do not load the full dump into memory.
-
-The full-dump wrapper uses conservative defaults designed for large runs on ~30GB RAM:
-
-- `--labels-batch-size 2000`
-- `--bow-batch-size 2000`
-- `--quickwit-chunk-bytes 4000000`
-- `ALPACA_LANGUAGES=en`
-- `ALPACA_MAX_ALIASES_PER_LANGUAGE=8`
-- `ALPACA_MAX_BOW_TOKENS=128`
-- `ALPACA_MAX_CONTEXT_OBJECT_IDS=32`
-- `ALPACA_MAX_CONTEXT_CHARS=640`
-- `ALPACA_MAX_DOC_BYTES=4096`
-- no `--limit` for full runs (true full indexing)
-
-Additional notes:
-
-- SQLite is WAL-backed with bounded cache settings.
-- Input dump is parsed line-by-line.
-- Quickwit ingest is chunked NDJSON, not one giant payload.
-- Output docs are size-capped and include compact `context` built from linked-object English labels (not predicate IDs).
-
-## Troubleshooting
-
-If a script says required Docker services are not running, start them first:
+Or use deterministic count mode (probes upward from `Q1`, skipping missing IDs):
 
 ```bash
-docker compose up -d quickwit api
+./scripts/run_live_sample_pipeline_docker.sh --count 120
 ```
 
-The API container bind-mounts local `src/`, `scripts/`, and `quickwit/`, so Python code changes are picked up immediately without rebuild.
+This does:
+1. Fetch live Wikidata seed entities into Postgres `sample_entity_cache`
+2. Prefetch one-hop related entity IDs from claim objects into `sample_entity_cache` (for context label resolution)
+3. Build a compact Wikidata-style dump from that Postgres cache (seed entities only)
+4. Run the Postgres -> deterministic context build -> Elasticsearch indexing pipeline
+5. Bring the API online
 
-Rebuild only when dependencies or Dockerfile layers change:
+### Step-by-step (manual)
+
+Fetch live entities into Postgres sample cache (and prefetch one-hop related entities for context support):
 
 ```bash
-docker compose build api
+python3 -m src.wikidata_sample_postgres --ids Q42,Q90,Q64,Q60 --force-refresh
 ```
 
-To remove all Quickwit indexes quickly:
+Deterministic count mode:
 
 ```bash
-./scripts/delete_quickwit_indexes.sh --yes
+python3 -m src.wikidata_sample_postgres --count 120 --force-refresh
 ```
 
-To preview before deleting:
+Build sample dump from Postgres sample cache:
 
 ```bash
-./scripts/delete_quickwit_indexes.sh --dry-run --prefix wikidata_entities
+python3 -m src.build_postgres_sample_dump \
+  --ids Q42,Q90,Q64,Q60 \
+  --output-path data/input/live_sample_dump.json.bz2
 ```
+
+Or with deterministic count:
+
+```bash
+python3 -m src.build_postgres_sample_dump \
+  --count 120 \
+  --output-path data/input/live_sample_dump.json.bz2
+```
+
+Run indexing pipeline:
+
+```bash
+python3 -m src.run_pipeline \
+  --dump-path data/input/live_sample_dump.json.bz2 \
+  --replace-elasticsearch-index \
+  --workers 4
+```
+
+## Full Dump / Local Dump Subset
+
+Run the Elasticsearch pipeline on a local Wikidata dump:
+
+```bash
+python3 -m src.run_pipeline --dump-path /absolute/path/latest-all.json.bz2 --replace-elasticsearch-index
+```
+
+Build a deterministic small dump from a local large dump (for smoke tests):
+
+```bash
+python3 -m src.build_small_dump \
+  --source-dump-path /absolute/path/latest-all.json.bz2 \
+  --output-path data/input/small_dump.json.bz2 \
+  --ids Q42,Q90,P31
+```
+
+## Explore Elasticsearch Data (UI)
+
+Open [http://localhost:8080](http://localhost:8080) and use the preconfigured cluster (`alpaca-local`).
+
+Indexed source documents use:
+- `label` (primary label)
+- `labels` (flat array of label strings, not language-keyed)
+- `aliases` (flat array of alias strings)
+- `context_string`, `coarse_type`, `fine_type`, `prior`, `cross_refs`
+
+Useful Elasticvue queries:
+
+```json
+{"query":{"match_all":{}},"size":20}
+```
+
+```json
+{"query":{"match":{"label":"boston"}},"size":20}
+```
+
+```json
+{"query":{"term":{"qid":"Q90"}}}
+```
+
+## API Endpoints
+
+- `GET /healthz`
+- `POST /lookup`
+- `POST /debug/lookup`
+- `POST /admin/reindex`
+
+Example debug lookup with context:
+
+```bash
+curl -s http://localhost:8000/debug/lookup \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "mention":"boston",
+    "mention_context":["massachusetts","new england","city","capital"],
+    "coarse_hints":["LOCATION"],
+    "fine_hints":["CITY"],
+    "top_k":10
+  }'
+```
+
+## Exact Matching (Why no `label_norm` / `alias_norms` fields anymore)
+
+Exact matching now uses Elasticsearch normalized keyword subfields:
+- `label.exact`
+- `aliases.exact`
+
+This keeps the source documents cleaner and avoids duplicating normalized values in separate top-level fields.
 
 ## Cleanup
 
-Remove generated artifacts while preserving `.gitkeep` files:
+Remove generated input/output artifacts:
 
 ```bash
 ./scripts/clean_repo_artifacts.sh --yes
 ```
 
-Also remove cached live entities:
+Reset Postgres sample cache only (live demo entities):
 
 ```bash
-./scripts/clean_repo_artifacts.sh --yes --include-cache
+docker compose exec postgres psql -U postgres -d alpaca -c "TRUNCATE TABLE sample_entity_cache;"
+```
+
+Reset indexed entities and query cache:
+
+```bash
+docker compose exec postgres psql -U postgres -d alpaca -c "TRUNCATE TABLE entities, query_cache;"
 ```
