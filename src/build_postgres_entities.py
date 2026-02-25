@@ -284,6 +284,7 @@ def run_pass1(
     disable_ner_classifier: bool = False,
     worker_count: int | None = None,
     build_search_vector: bool = True,
+    expected_entity_total: int | None = None,
 ) -> int:
     if batch_size <= 0:
         raise ValueError("--batch-size must be > 0")
@@ -291,6 +292,8 @@ def run_pass1(
         raise ValueError("--max-aliases-per-language must be >= 0")
     if max_context_object_ids < 0:
         raise ValueError("--max-context-object-ids must be >= 0")
+    if expected_entity_total is not None and expected_entity_total <= 0:
+        raise ValueError("--expected-entity-total must be > 0 when provided")
 
     ensure_existing_file(
         dump_path,
@@ -308,12 +311,18 @@ def run_pass1(
     typed_rows = 0
     pending_entities: list[dict[str, Any]] = []
 
-    progress_total = estimate_wikidata_entity_total(
-        dump_path,
-        limit=None if limit == 0 else limit,
-    )
-    if progress_total is not None:
-        print(f"Progress estimate: pg-pass1 total~{progress_total} entities")
+    if expected_entity_total is not None:
+        progress_total = int(expected_entity_total)
+        if limit > 0:
+            progress_total = min(progress_total, limit)
+        print(f"Progress estimate: pg-pass1 total~{progress_total} entities (manual override)")
+    else:
+        progress_total = estimate_wikidata_entity_total(
+            dump_path,
+            limit=None if limit == 0 else limit,
+        )
+        if progress_total is not None:
+            print(f"Progress estimate: pg-pass1 total~{progress_total} entities (sampled)")
 
     executor: ThreadPoolExecutor | None = (
         ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
@@ -490,6 +499,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=parse_positive_int, default=5000)
     parser.add_argument("--context-batch-size", type=parse_positive_int, default=1000)
     parser.add_argument("--limit", type=parse_non_negative_int, default=0)
+    parser.add_argument(
+        "--expected-entity-total",
+        type=parse_non_negative_int,
+        default=0,
+        help=(
+            "Optional manual progress total override for pass1 (e.g., from Wikidata:Statistics). "
+            "0 = auto sample from the local dump."
+        ),
+    )
     parser.add_argument("--workers", type=parse_positive_int, default=max(1, min(8, (os.cpu_count() or 1))))
     parser.add_argument(
         "--languages",
@@ -523,6 +541,7 @@ def main() -> int:
                 max_context_object_ids=args.max_context_object_ids,
                 disable_ner_classifier=args.disable_ner_classifier,
                 worker_count=args.workers,
+                expected_entity_total=(args.expected_entity_total or None),
             )
             if status != 0:
                 return status

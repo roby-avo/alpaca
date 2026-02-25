@@ -48,6 +48,15 @@ def parse_args() -> argparse.Namespace:
         help="Entity parse limit for smoke runs (0 = no limit).",
     )
     parser.add_argument(
+        "--expected-entity-total",
+        type=parse_non_negative_int,
+        default=0,
+        help=(
+            "Optional manual progress total override for pass1 (e.g., from Wikidata:Statistics). "
+            "0 = auto sample from the local dump."
+        ),
+    )
+    parser.add_argument(
         "--pass1-batch-size",
         type=parse_positive_int,
         default=5000,
@@ -117,6 +126,7 @@ def main() -> int:
                 worker_count=args.workers,
                 # Standard pipeline runs pass2, which rebuilds search_vector after context enrichment.
                 build_search_vector=bool(args.skip_pass2),
+                expected_entity_total=(args.expected_entity_total or None),
             )
             if pass1_status != 0:
                 return pass1_status
