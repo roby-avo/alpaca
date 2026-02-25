@@ -6,20 +6,15 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .build_elasticsearch_index import run as run_elasticsearch_reindex
-from .common import (
-    resolve_elasticsearch_index,
-    resolve_elasticsearch_url,
-    resolve_postgres_dsn,
-)
-from .elasticsearch_client import ElasticsearchClient, ElasticsearchClientError
+from .common import resolve_postgres_dsn
 from .entity_lookup import EntityLookupService
-from .postgres_store import PostgresStoreError
+from .postgres_store import PostgresStore, PostgresStoreError
 
 
 class LookupRequest(BaseModel):
     mention: str = Field(..., min_length=1, max_length=512)
     mention_context: str | list[str] | None = Field(default=None)
+    crosslink_hints: str | list[str] | None = Field(default=None)
     coarse_hints: list[str] = Field(default_factory=list)
     fine_hints: list[str] = Field(default_factory=list)
     top_k: int = Field(default=20, ge=1, le=100)
@@ -29,11 +24,11 @@ class LookupRequest(BaseModel):
 class LookupCandidate(BaseModel):
     qid: str
     label: str = ""
-    labels: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
     context_string: str = ""
     coarse_type: str = ""
     fine_type: str = ""
+    item_category: str = ""
     popularity: float = 0.0
     score: float = 0.0
     name_score: float = 0.0
@@ -60,74 +55,78 @@ class DebugLookupResponse(LookupResponse):
 
 
 class ReindexRequest(BaseModel):
-    replace_index: bool = True
-    fetch_batch_size: int = Field(default=2000, ge=1, le=20000)
-    chunk_bytes: int = Field(default=8_000_000, ge=1024)
-    workers: int = Field(default=4, ge=1, le=64)
-    wait_timeout_seconds: float = Field(default=120.0, ge=0.0)
-    poll_interval_seconds: float = Field(default=2.0, ge=0.0)
-    http_timeout_seconds: float = Field(default=120.0, gt=0.0)
+    ensure_search_indexes: bool = True
 
 
 app = FastAPI(
     title="alpaca retrieval api",
     version="0.1.0",
     description=(
-        "Deterministic context-aware entity retrieval API over Elasticsearch "
+        "Deterministic context-aware entity retrieval API over PostgreSQL "
         "with Postgres-backed entities and query cache."
     ),
 )
 
 
-def get_elasticsearch_client() -> tuple[ElasticsearchClient, str]:
-    es_url = resolve_elasticsearch_url(None)
-    index_name = resolve_elasticsearch_index(None)
-    return ElasticsearchClient(es_url), index_name
+@app.on_event("startup")
+def startup_init() -> None:
+    store = PostgresStore(resolve_postgres_dsn(None))
+    store.ensure_schema()
+    store.ensure_search_indexes()
 
 
 def get_lookup_service() -> EntityLookupService:
-    return EntityLookupService(
-        postgres_dsn=resolve_postgres_dsn(None),
-        elasticsearch_url=resolve_elasticsearch_url(None),
-        index_name=resolve_elasticsearch_index(None),
-    )
+    return EntityLookupService(postgres_dsn=resolve_postgres_dsn(None))
 
 
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
-    elasticsearch_healthy = False
-    es_url = ""
-    es_index = ""
+    postgres_healthy = False
+    postgres_dsn = resolve_postgres_dsn(None)
+    entity_count: int | None = None
     try:
-        es_client, es_index = get_elasticsearch_client()
-        es_url = es_client.base_url
-        elasticsearch_healthy = es_client.is_healthy()
+        store = PostgresStore(postgres_dsn)
+        store.ensure_schema()
+        postgres_healthy = True
+        entity_count = store.count_entities()
     except Exception:
-        elasticsearch_healthy = False
+        postgres_healthy = False
 
-    status = "ok" if elasticsearch_healthy else "degraded"
+    status = "ok" if postgres_healthy else "degraded"
     return {
         "status": status,
-        "search_backend": "elasticsearch",
-        "elasticsearch_url": es_url,
-        "elasticsearch_index": es_index,
-        "elasticsearch_healthy": elasticsearch_healthy,
+        "search_backend": "postgres",
+        "postgres_dsn": postgres_dsn,
+        "postgres_healthy": postgres_healthy,
+        "entities": entity_count,
     }
 
 
 def _coerce_lookup_candidate(raw: Mapping[str, Any]) -> LookupCandidate:
+    raw_aliases = raw.get("aliases")
+    aliases: list[str] = []
+    if isinstance(raw_aliases, list):
+        aliases = [value for value in raw_aliases if isinstance(value, str)]
+    elif isinstance(raw_aliases, Mapping):
+        for values in raw_aliases.values():
+            if isinstance(values, list):
+                aliases.extend([value for value in values if isinstance(value, str)])
+    else:
+        # Backward-compatible decode path for cached results produced before/around the rename.
+        raw_name_variants = raw.get("name_variants")
+        if isinstance(raw_name_variants, list):
+            aliases.extend([value for value in raw_name_variants if isinstance(value, str)])
+        labels = raw.get("labels")
+        if isinstance(labels, list):
+            aliases.extend([value for value in labels if isinstance(value, str)])
     return LookupCandidate(
         qid=raw.get("qid") if isinstance(raw.get("qid"), str) else "",
         label=raw.get("label") if isinstance(raw.get("label"), str) else "",
-        labels=[value for value in raw.get("labels", []) if isinstance(value, str)]
-        if isinstance(raw.get("labels"), list)
-        else [],
-        aliases=[value for value in raw.get("aliases", []) if isinstance(value, str)]
-        if isinstance(raw.get("aliases"), list)
-        else [],
+        aliases=aliases,
         context_string=raw.get("context_string") if isinstance(raw.get("context_string"), str) else "",
         coarse_type=raw.get("coarse_type") if isinstance(raw.get("coarse_type"), str) else "",
         fine_type=raw.get("fine_type") if isinstance(raw.get("fine_type"), str) else "",
+        item_category=raw.get("item_category") if isinstance(raw.get("item_category"), str) else "",
         popularity=float(raw.get("popularity", 0.0))
         if isinstance(raw.get("popularity"), (int, float))
         else 0.0,
@@ -156,6 +155,7 @@ def _run_lookup(request: LookupRequest, *, include_top_k: bool) -> dict[str, Any
         return service.lookup(
             mention=request.mention,
             mention_context=request.mention_context,
+            crosslink_hints=request.crosslink_hints,
             coarse_hints=request.coarse_hints,
             fine_hints=request.fine_hints,
             top_k=request.top_k,
@@ -164,7 +164,7 @@ def _run_lookup(request: LookupRequest, *, include_top_k: bool) -> dict[str, Any
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except (ElasticsearchClientError, PostgresStoreError) as exc:
+    except PostgresStoreError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -218,24 +218,17 @@ def debug_lookup_entity(request: LookupRequest) -> DebugLookupResponse:
 @app.post("/admin/reindex")
 def admin_reindex(request: ReindexRequest) -> dict[str, Any]:
     try:
-        status = run_elasticsearch_reindex(
-            postgres_dsn=resolve_postgres_dsn(None),
-            elasticsearch_url=resolve_elasticsearch_url(None),
-            index_name=resolve_elasticsearch_index(None),
-            replace_index=request.replace_index,
-            fetch_batch_size=request.fetch_batch_size,
-            chunk_bytes=request.chunk_bytes,
-            worker_count=request.workers,
-            wait_timeout_seconds=request.wait_timeout_seconds,
-            poll_interval_seconds=request.poll_interval_seconds,
-            http_timeout_seconds=request.http_timeout_seconds,
-        )
-    except (ElasticsearchClientError, PostgresStoreError, ValueError) as exc:
+        store = PostgresStore(resolve_postgres_dsn(None))
+        store.ensure_schema()
+        if request.ensure_search_indexes:
+            store.ensure_search_indexes()
+        status = 0
+    except (PostgresStoreError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {
         "status": "ok" if status == 0 else "error",
         "exit_code": status,
-        "backend": "elasticsearch",
-        "index_name": resolve_elasticsearch_index(None),
+        "backend": "postgres",
+        "search_indexes_ensured": bool(request.ensure_search_indexes),
     }

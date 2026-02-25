@@ -16,16 +16,12 @@ LABELS_DB_PATH_ENV = "ALPACA_LABELS_DB_PATH"
 BOW_OUTPUT_PATH_ENV = "ALPACA_BOW_OUTPUT_PATH"
 NER_TYPES_PATH_ENV = "ALPACA_NER_TYPES_PATH"
 POSTGRES_DSN_ENV = "ALPACA_POSTGRES_DSN"
-ELASTICSEARCH_URL_ENV = "ALPACA_ELASTICSEARCH_URL"
-ELASTICSEARCH_INDEX_ENV = "ALPACA_ELASTICSEARCH_INDEX"
 
 DEFAULT_DUMP_PRIMARY = Path("/downloads/latest-all.json.bz2")
 DEFAULT_DUMP_SECONDARY = Path("./data/input/latest-all.json.bz2")
 DEFAULT_LABELS_DB_PATH = Path("./data/output/wikidata_labels.sqlite")
 DEFAULT_BOW_OUTPUT_PATH = Path("./data/output/bow_docs.jsonl.gz")
 DEFAULT_POSTGRES_DSN = "postgresql://postgres@localhost:5432/alpaca"
-DEFAULT_ELASTICSEARCH_URL = "http://localhost:9200"
-DEFAULT_ELASTICSEARCH_INDEX = "wikidata_entities"
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
@@ -137,14 +133,6 @@ def resolve_ner_types_path(cli_value: str | None) -> Path | None:
 
 def resolve_postgres_dsn(cli_value: str | None) -> str:
     return resolve_configured_str(cli_value, POSTGRES_DSN_ENV, DEFAULT_POSTGRES_DSN)
-
-
-def resolve_elasticsearch_url(cli_value: str | None) -> str:
-    return resolve_configured_str(cli_value, ELASTICSEARCH_URL_ENV, DEFAULT_ELASTICSEARCH_URL)
-
-
-def resolve_elasticsearch_index(cli_value: str | None) -> str:
-    return resolve_configured_str(cli_value, ELASTICSEARCH_INDEX_ENV, DEFAULT_ELASTICSEARCH_INDEX)
 
 
 def resolve_configured_path(

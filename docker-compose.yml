@@ -13,32 +13,15 @@ services:
         source: ${ALPACA_POSTGRES_DATA_DIR:-./data/postgres}
         target: /var/lib/postgresql
 
-  elasticsearch:
-    image: elastic/elasticsearch:${ALPACA_ELASTICSEARCH_VERSION:-9.3.0}
-    pull_policy: always
-    environment:
-      discovery.type: single-node
-      xpack.security.enabled: "false"
-      ES_JAVA_OPTS: ${ALPACA_ES_JAVA_OPTS:--Xms4g -Xmx4g}
-      http.cors.enabled: "true"
-      http.cors.allow-origin: ${ALPACA_ES_CORS_ALLOW_ORIGIN:-http://localhost:8080}
-      http.cors.allow-headers: ${ALPACA_ES_CORS_ALLOW_HEADERS:-X-Requested-With,Content-Type,Content-Length,Authorization}
-    ports:
-      - "${ALPACA_ELASTICSEARCH_PORT:-9200}:9200"
-    volumes:
-      - type: bind
-        source: ${ALPACA_ELASTICSEARCH_DATA_DIR:-./data/elasticsearch}
-        target: /usr/share/elasticsearch/data
-
-  elasticvue:
-    image: cars10/elasticvue:${ALPACA_ELASTICVUE_VERSION:-1.13.0}
+  adminer:
+    image: adminer:${ALPACA_ADMINER_VERSION:-5}
     pull_policy: always
     depends_on:
-      - elasticsearch
+      - postgres
     environment:
-      ELASTICVUE_CLUSTERS: '[{"name":"alpaca-local","uri":"http://localhost:${ALPACA_ELASTICSEARCH_PORT:-9200}"}]'
+      ADMINER_DEFAULT_SERVER: ${ALPACA_ADMINER_DEFAULT_SERVER:-postgres}
     ports:
-      - "${ALPACA_ELASTICVUE_PORT:-8080}:8080"
+      - "${ALPACA_ADMINER_PORT:-8080}:8080"
 
   api:
     build:
@@ -48,15 +31,12 @@ services:
     command: ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
       - postgres
-      - elasticsearch
     environment:
       ALPACA_DUMP_PATH: ${ALPACA_DUMP_PATH:-/mnt/input/latest-all.json.bz2}
       ALPACA_NER_TYPES_PATH: ${ALPACA_NER_TYPES_PATH:-}
       ALPACA_LABELS_DB_PATH: ${ALPACA_LABELS_DB_PATH:-/workspace/data/output/wikidata_labels.sqlite}
       ALPACA_BOW_OUTPUT_PATH: ${ALPACA_BOW_OUTPUT_PATH:-/workspace/data/output/bow_docs.jsonl.gz}
       ALPACA_POSTGRES_DSN: ${ALPACA_POSTGRES_DSN:-postgresql://postgres@postgres:5432/alpaca}
-      ALPACA_ELASTICSEARCH_URL: ${ALPACA_ELASTICSEARCH_URL:-http://elasticsearch:9200}
-      ALPACA_ELASTICSEARCH_INDEX: ${ALPACA_ELASTICSEARCH_INDEX:-wikidata_entities}
     ports:
       - "${ALPACA_API_PORT:-8000}:8000"
     volumes:

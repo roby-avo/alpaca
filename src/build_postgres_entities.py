@@ -31,6 +31,18 @@ from .postgres_store import EntityRecord, PostgresStore
 
 
 DEFAULT_MAX_CONTEXT_OBJECT_IDS = 32
+DISAMBIGUATION_INSTANCE_OF_QIDS = frozenset(
+    {
+        "Q4167410",   # Wikimedia disambiguation page
+        "Q22808320",  # Wikimedia human name disambiguation page
+    }
+)
+CLASSLIKE_INSTANCE_OF_QIDS = frozenset(
+    {
+        "Q16889133",  # class
+        "Q24017414",  # first-order class
+    }
+)
 
 
 def parse_non_negative_int(raw: str) -> int:
@@ -91,6 +103,63 @@ def _extract_popularity(entity: Mapping[str, Any]) -> float:
     return 0.0
 
 
+def _claim_object_ids_for_property(
+    entity: Mapping[str, Any],
+    property_id: str,
+    *,
+    limit: int = 32,
+) -> list[str]:
+    claims = entity.get("claims")
+    if not isinstance(claims, Mapping):
+        return []
+    selected = claims.get(property_id)
+    if selected is None:
+        return []
+    wrapper = {"claims": {property_id: selected}}
+    return extract_claim_object_ids(wrapper, limit=limit)
+
+
+def infer_item_category(entity: Mapping[str, Any]) -> str:
+    entity_id = entity.get("id")
+    if not isinstance(entity_id, str) or not entity_id:
+        return "OTHER"
+
+    entity_type = entity.get("type")
+    if entity_id.startswith("P") or entity_type == "property":
+        return "PREDICATE"
+    if entity_type == "lexeme":
+        return "LEXEME"
+    if entity_type == "form":
+        return "FORM"
+    if entity_type == "sense":
+        return "SENSE"
+    if entity_type == "mediainfo":
+        return "MEDIAINFO"
+
+    if not entity_id.startswith("Q"):
+        return "OTHER"
+
+    claims = entity.get("claims")
+    if not isinstance(claims, Mapping):
+        return "ENTITY"
+
+    p31_ids = set(_claim_object_ids_for_property(entity, "P31", limit=16))
+    if p31_ids & DISAMBIGUATION_INSTANCE_OF_QIDS:
+        return "DISAMBIGUATION"
+
+    p279_claims = claims.get("P279")
+    if isinstance(p279_claims, Sequence) and not isinstance(
+        p279_claims, (str, bytes, bytearray)
+    ):
+        if any(isinstance(statement, Mapping) for statement in p279_claims):
+            return "TYPE"
+
+    if p31_ids & CLASSLIKE_INSTANCE_OF_QIDS:
+        return "TYPE"
+
+    return "ENTITY"
+
+
 def transform_entity_to_record(
     entity: Mapping[str, Any],
     *,
@@ -140,6 +209,7 @@ def transform_entity_to_record(
     relation_object_qids = extract_claim_object_ids(entity, limit=max_context_object_ids)
     popularity = _extract_popularity(entity)
     cross_refs = _extract_cross_refs(entity)
+    item_category = infer_item_category(entity)
 
     return EntityRecord(
         qid=entity_id,
@@ -147,6 +217,7 @@ def transform_entity_to_record(
         labels=labels,
         aliases=aliases,
         relation_object_qids=relation_object_qids,
+        item_category=item_category,
         coarse_type=coarse_type,
         fine_type=fine_type,
         popularity=popularity,
@@ -164,6 +235,7 @@ def _flush_transform_batch(
     max_aliases_per_language: int,
     max_context_object_ids: int,
     disable_ner_classifier: bool,
+    build_search_vector: bool,
 ) -> tuple[int, int]:
     if not raw_entities:
         return 0, 0
@@ -196,7 +268,7 @@ def _flush_transform_batch(
                 typed_rows += 1
             records.append(record)
 
-    stored = store.upsert_entities(records)
+    stored = store.upsert_entities(records, build_search_vector=build_search_vector)
     return stored, typed_rows
 
 
@@ -211,6 +283,7 @@ def run_pass1(
     max_context_object_ids: int = DEFAULT_MAX_CONTEXT_OBJECT_IDS,
     disable_ner_classifier: bool = False,
     worker_count: int | None = None,
+    build_search_vector: bool = True,
 ) -> int:
     if batch_size <= 0:
         raise ValueError("--batch-size must be > 0")
@@ -262,6 +335,7 @@ def run_pass1(
                         max_aliases_per_language=max_aliases_per_language,
                         max_context_object_ids=max_context_object_ids,
                         disable_ner_classifier=disable_ner_classifier,
+                        build_search_vector=build_search_vector,
                     )
                     stored_rows += stored
                     typed_rows += typed
@@ -276,6 +350,7 @@ def run_pass1(
                 max_aliases_per_language=max_aliases_per_language,
                 max_context_object_ids=max_context_object_ids,
                 disable_ner_classifier=disable_ner_classifier,
+                build_search_vector=build_search_vector,
             )
             stored_rows += stored
             typed_rows += typed
@@ -293,6 +368,7 @@ def run_pass1(
         f"typed={typed_rows}",
         f"languages={','.join(active_languages)}",
         f"workers={workers}",
+        f"build_search_vector={build_search_vector}",
     )
     return 0
 

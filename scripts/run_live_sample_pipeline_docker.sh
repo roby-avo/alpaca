@@ -9,7 +9,6 @@ IDS_FILE="${ALPACA_LIVE_SAMPLE_IDS_FILE:-}"
 COUNT="${ALPACA_LIVE_SAMPLE_COUNT:-}"
 OUTPUT_DUMP="${ALPACA_LIVE_SAMPLE_DUMP_PATH:-${ROOT_DIR}/data/input/live_sample_dump.json.bz2}"
 FORCE_REFRESH=0
-REPLACE_INDEX=1
 LIVE_CONCURRENCY="${ALPACA_LIVE_SAMPLE_CONCURRENCY:-}"
 LIVE_SLEEP_SECONDS="${ALPACA_LIVE_SAMPLE_SLEEP_SECONDS:-}"
 LIVE_HTTP_MAX_RETRIES="${ALPACA_LIVE_SAMPLE_HTTP_MAX_RETRIES:-}"
@@ -28,7 +27,6 @@ Options:
   --count N           Deterministic count mode (probes upward from Q1 and skips missing IDs).
   --output-dump PATH  Output dump path (default: ./data/input/live_sample_dump.json.bz2).
   --force-refresh     Refetch QIDs even if already present in Postgres sample cache.
-  --no-replace-index  Reuse existing Elasticsearch index instead of recreating it.
   --concurrency N     Live demo fetch concurrency for Wikidata requests (seed fetch; support fetch is internally capped).
   --sleep-seconds S   Delay after successful Wikidata fetches (support fetch has a minimum throttle).
   --http-max-retries N
@@ -64,10 +62,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --force-refresh)
       FORCE_REFRESH=1
-      shift
-      ;;
-    --no-replace-index)
-      REPLACE_INDEX=0
       shift
       ;;
     --concurrency)
@@ -110,8 +104,8 @@ fi
 
 mkdir -p "$(dirname -- "${OUTPUT_DUMP}")"
 
-echo "Step 1/4: Start local services (Postgres + Elasticsearch + Elasticvue)"
-docker compose up -d postgres elasticsearch elasticvue api
+echo "Step 1/4: Start local services (Postgres + Adminer + API)"
+docker compose up -d postgres adminer api
 
 echo "Step 2/4: Fetch live Wikidata seed entities (+ one-hop context support entities) into Postgres sample cache"
 set -- docker compose exec -T api python -m src.wikidata_sample_postgres
@@ -155,14 +149,11 @@ if [ -n "${COUNT}" ]; then
 fi
 "$@"
 
-echo "Step 4/4: Run Elasticsearch indexing pipeline on the generated sample dump"
+echo "Step 4/4: Run Postgres pipeline on the generated sample dump"
 set -- docker compose exec -T api python -m src.run_pipeline \
   --dump-path "${OUTPUT_DUMP}"
-if [ "${REPLACE_INDEX}" -eq 1 ]; then
-  set -- "$@" --replace-elasticsearch-index
-fi
 "$@"
 
 echo "Done."
-echo "Elasticvue: http://localhost:${ALPACA_ELASTICVUE_PORT:-8080}"
 echo "API:       http://localhost:${ALPACA_API_PORT:-8000}"
+echo "Adminer:   http://localhost:${ALPACA_ADMINER_PORT:-8080}"

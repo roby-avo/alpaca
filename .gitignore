@@ -20,8 +20,6 @@ data/input/*
 !data/input/.gitkeep
 data/output/*
 !data/output/.gitkeep
-data/elasticsearch/*
-!data/elasticsearch/.gitkeep
 data/postgres/*
 !data/postgres/.gitkeep
 artifacts/
