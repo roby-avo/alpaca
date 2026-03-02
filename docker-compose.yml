@@ -2,6 +2,7 @@ services:
   postgres:
     container_name: alpaca-postgres
     image: postgres:${ALPACA_POSTGRES_VERSION:-18.1}
+    shm_size: 1gb
     pull_policy: always
     environment:
       POSTGRES_DB: ${ALPACA_POSTGRES_DB:-alpaca}

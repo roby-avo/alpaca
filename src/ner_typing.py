@@ -20,7 +20,7 @@ class FineTypeRule:
 FINE_TYPE_RULES: tuple[FineTypeRule, ...] = (
     FineTypeRule(
         coarse="PERSON",
-        fine="HUMAN",
+        fine="PERSON",
         token_clues=frozenset(
             {
                 "person",
@@ -394,7 +394,7 @@ def infer_ner_types(
 
     text_values = _iter_text_values(labels, aliases, descriptions)
     if not text_values:
-        return ["MISC"], ["ENTITY"], "lexical_v1"
+        return ["MISC"], ["MISC"], "lexical_v1"
 
     normalized_text = "\n".join(value.casefold() for value in text_values)
     token_set = set(tokenize(normalized_text))
@@ -409,7 +409,7 @@ def infer_ner_types(
             scored_rules.append((score, rule))
 
     if not scored_rules:
-        return ["MISC"], ["ENTITY"], "lexical_v1"
+        return ["MISC"], ["MISC"], "lexical_v1"
 
     scored_rules.sort(key=lambda item: (-item[0], item[1].fine))
     top_score = scored_rules[0][0]
@@ -433,6 +433,6 @@ def infer_ner_types(
     if not coarse_types:
         coarse_types = ["MISC"]
     if not fine_types:
-        fine_types = ["ENTITY"]
+        fine_types = ["MISC"]
 
     return coarse_types, fine_types, "lexical_v1"
