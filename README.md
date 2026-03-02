@@ -12,6 +12,8 @@ Deterministic entity lookup over Wikidata-style data using:
 Local Docker setup is intentionally passwordless / no-auth for dev:
 - Postgres uses `trust`
 - Adminer connects to Postgres with empty password (same local dev assumption)
+- Postgres defaults to `max_connections=200`, which is a conservative cap for the
+  current 8 vCPU / ~30 GiB VM target without an external pooler
 
 ## Version Pinning
 

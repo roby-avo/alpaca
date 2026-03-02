@@ -4,6 +4,12 @@ services:
     image: postgres:${ALPACA_POSTGRES_VERSION:-18.1}
     shm_size: 1gb
     pull_policy: always
+    # Keep some headroom for the API, Adminer, and the parallel pipeline workers
+    # without pushing the VM into an overly large backend count.
+    command:
+      - postgres
+      - -c
+      - max_connections=${ALPACA_POSTGRES_MAX_CONNECTIONS:-200}
     environment:
       POSTGRES_DB: ${ALPACA_POSTGRES_DB:-alpaca}
       POSTGRES_USER: ${ALPACA_POSTGRES_USER:-postgres}
