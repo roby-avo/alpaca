@@ -14,6 +14,8 @@ Local Docker setup is intentionally passwordless / no-auth for dev:
 - Adminer connects to Postgres with empty password (same local dev assumption)
 - Postgres defaults to `max_connections=200`, which is a conservative cap for the
   current 8 vCPU / ~30 GiB VM target without an external pooler
+- The Compose Postgres service also exposes env-driven memory / planner / parallelism
+  tuning defaults for that VM profile; review `.env.example` before deploying
 
 ## Version Pinning
 
@@ -26,6 +28,21 @@ cp .env.example .env
 ```
 
 Then adjust versions in `.env` after checking Docker Hub.
+
+## VM Postgres Rollout
+
+Before running one-off maintenance on a large `entities` table, deploy the Compose
+Postgres config update first so the instance restarts with the updated memory,
+planner, and parallelism settings from `.env.example`.
+
+The defaults are intentionally conservative for a shared VM. The heavier
+vacuum/autovacuum tuning should stay table-specific for `entities`, not global.
+
+Suggested order:
+1. Update `.env` on the VM with the Postgres tuning values.
+2. Restart the Postgres service: `docker compose up -d postgres`
+3. Confirm the live settings: `SHOW shared_buffers; SHOW work_mem; SHOW maintenance_work_mem;`
+4. Run your one-off `entities` maintenance only after the new settings are live
 
 ## Start Services
 

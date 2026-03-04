@@ -2,14 +2,22 @@ services:
   postgres:
     container_name: alpaca-postgres
     image: postgres:${ALPACA_POSTGRES_VERSION:-18.1}
-    shm_size: 1gb
+    shm_size: ${ALPACA_POSTGRES_SHM_SIZE:-4gb}
     pull_policy: always
-    # Keep some headroom for the API, Adminer, and the parallel pipeline workers
-    # without pushing the VM into an overly large backend count.
-    command:
-      - postgres
-      - -c
-      - max_connections=${ALPACA_POSTGRES_MAX_CONNECTIONS:-200}
+    command: >
+      postgres
+      -c max_connections=${ALPACA_POSTGRES_MAX_CONNECTIONS:-200}
+      -c shared_buffers=${ALPACA_POSTGRES_SHARED_BUFFERS:-4GB}
+      -c effective_cache_size=${ALPACA_POSTGRES_EFFECTIVE_CACHE_SIZE:-8GB}
+      -c work_mem=${ALPACA_POSTGRES_WORK_MEM:-8MB}
+      -c maintenance_work_mem=${ALPACA_POSTGRES_MAINTENANCE_WORK_MEM:-1GB}
+      -c random_page_cost=${ALPACA_POSTGRES_RANDOM_PAGE_COST:-1.25}
+      -c effective_io_concurrency=${ALPACA_POSTGRES_EFFECTIVE_IO_CONCURRENCY:-32}
+      -c checkpoint_completion_target=${ALPACA_POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
+      -c max_wal_size=${ALPACA_POSTGRES_MAX_WAL_SIZE:-4GB}
+      -c wal_compression=${ALPACA_POSTGRES_WAL_COMPRESSION:-on}
+      -c max_parallel_workers=${ALPACA_POSTGRES_MAX_PARALLEL_WORKERS:-4}
+      -c max_parallel_workers_per_gather=${ALPACA_POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER:-1}
     environment:
       POSTGRES_DB: ${ALPACA_POSTGRES_DB:-alpaca}
       POSTGRES_USER: ${ALPACA_POSTGRES_USER:-postgres}
