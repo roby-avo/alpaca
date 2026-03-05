@@ -22,6 +22,8 @@ data/output/*
 !data/output/.gitkeep
 data/postgres/*
 !data/postgres/.gitkeep
+data/elasticsearch/*
+!data/elasticsearch/.gitkeep
 artifacts/
 *.sqlite
 *.sqlite3

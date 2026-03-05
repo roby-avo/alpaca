@@ -4,18 +4,21 @@
 
 Deterministic entity lookup over Wikidata-style data using:
 - PostgreSQL (entity store, search indexes, query cache, live demo sample cache)
+- Elasticsearch (optional external index for integration experiments)
 - FastAPI (lookup API)
 - Adminer (optional UI for inspecting PostgreSQL data)
+- Elasticvue (lightweight UI for inspecting Elasticsearch data)
 
 ## Local Stack (No Auth)
 
 Local Docker setup is intentionally passwordless / no-auth for dev:
 - Postgres uses `trust`
+- Elasticsearch security is disabled (`xpack.security.enabled=false`)
 - Adminer connects to Postgres with empty password (same local dev assumption)
-- Postgres defaults to `max_connections=200`, which is a conservative cap for the
-  current 8 vCPU / ~30 GiB VM target without an external pooler
-- The Compose Postgres service also exposes env-driven memory / planner / parallelism
-  tuning defaults for that VM profile; review `.env.example` before deploying
+- Postgres defaults to `max_connections=200` (as requested for compatibility)
+- The Compose stack exposes env-driven CPU/memory caps for all services
+  (`postgres`, `api`, `adminer`, `elasticsearch`, `elasticvue`) plus low-footprint
+  Postgres/Elastic tuning in `.env.example`
 
 ## Version Pinning
 
@@ -27,7 +30,7 @@ Create your local `.env` first:
 cp .env.example .env
 ```
 
-Then adjust versions in `.env` after checking Docker Hub.
+Then adjust versions in `.env` after checking Docker Hub / Elastic registry.
 
 ## VM Postgres Rollout
 
@@ -49,12 +52,14 @@ Suggested order:
 ```bash
 docker compose pull
 docker compose build api
-docker compose up -d postgres adminer api
+docker compose up -d postgres adminer elasticsearch elasticvue api
 ```
 
 Useful URLs:
 - API: [http://localhost:8000](http://localhost:8000)
 - Adminer (Postgres UI): [http://localhost:8080](http://localhost:8080)
+- Elasticsearch API: [http://localhost:9200](http://localhost:9200)
+- Elasticvue (Elasticsearch UI): [http://localhost:8081](http://localhost:8081)
 
 ## Full Dump / Production Pipeline (Local Dump)
 
@@ -195,6 +200,26 @@ SELECT indexname, indexdef
 FROM pg_indexes
 WHERE tablename = 'entities'
 ORDER BY indexname;
+```
+
+## Explore Elasticsearch Data (UI + Quick Checks)
+
+Open [http://localhost:8081](http://localhost:8081) (Elasticvue).
+
+The Compose setup preloads one cluster endpoint:
+- Name: `alpaca-es`
+- URI: `http://localhost:9200`
+
+Quick index inspection commands:
+
+```bash
+curl -s http://localhost:9200/_cat/indices?v
+```
+
+```bash
+curl -s http://localhost:9200/<index_name>/_search \
+  -H 'Content-Type: application/json' \
+  -d '{"size":5,"query":{"match_all":{}}}'
 ```
 
 ## Storage Estimation (Sample + Replicate)
