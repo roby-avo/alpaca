@@ -116,6 +116,45 @@ Useful live demo tuning (to avoid upstream throttling):
 - `--http-max-retries`
 - `--max-context-support-prefetch`
 
+## Mirror PostgreSQL Entities to Elasticsearch
+
+Elasticsearch indexing reads directly from PostgreSQL `entities`, so it indexes
+whatever is currently in Postgres (live demo sample or full production ingest).
+
+Start required services first:
+
+```bash
+docker compose up -d postgres elasticsearch api
+```
+
+Recreate and fully mirror the index:
+
+```bash
+docker compose exec api python -m src.index_postgres_to_elasticsearch \
+  --index-name alpaca-entities \
+  --recreate-index \
+  --workers 4 \
+  --batch-size 10000 \
+  --bulk-actions 2000
+```
+
+Incremental sync (only rows updated after a timestamp):
+
+```bash
+docker compose exec api python -m src.index_postgres_to_elasticsearch \
+  --index-name alpaca-entities \
+  --updated-since '2026-03-01T00:00:00Z'
+```
+
+Note: use `docker compose exec` (without `-T`) to keep TTY enabled so `tqdm`
+renders the live progress bar.
+
+Local helper script (same module):
+
+```bash
+./scripts/run_postgres_to_elasticsearch.sh --index-name alpaca-entities --recreate-index
+```
+
 ## PostgreSQL Search / Matching Logic
 
 Candidate retrieval uses PostgreSQL only:
