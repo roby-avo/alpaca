@@ -16,9 +16,8 @@ Local Docker setup is intentionally passwordless / no-auth for dev:
 - Elasticsearch security is disabled (`xpack.security.enabled=false`)
 - Adminer connects to Postgres with empty password (same local dev assumption)
 - Postgres defaults to `max_connections=200` (as requested for compatibility)
-- The Compose stack exposes env-driven CPU/memory caps for all services
-  (`postgres`, `api`, `adminer`, `elasticsearch`, `elasticvue`) plus low-footprint
-  Postgres/Elastic tuning in `.env.example`
+- Postgres keeps defaults for most internals; only `shm_size` and `max_connections`
+  are explicitly configured in `.env.example`
 
 ## Version Pinning
 
@@ -35,16 +34,13 @@ Then adjust versions in `.env` after checking Docker Hub / Elastic registry.
 ## VM Postgres Rollout
 
 Before running one-off maintenance on a large `entities` table, deploy the Compose
-Postgres config update first so the instance restarts with the updated memory,
-planner, and parallelism settings from `.env.example`.
-
-The defaults are intentionally conservative for a shared VM. The heavier
-vacuum/autovacuum tuning should stay table-specific for `entities`, not global.
+Postgres config update first so the instance restarts with the current values from
+`.env.example`.
 
 Suggested order:
-1. Update `.env` on the VM with the Postgres tuning values.
+1. Update `.env` on the VM (`ALPACA_POSTGRES_SHM_SIZE`, `ALPACA_POSTGRES_MAX_CONNECTIONS`).
 2. Restart the Postgres service: `docker compose up -d postgres`
-3. Confirm the live settings: `SHOW shared_buffers; SHOW work_mem; SHOW maintenance_work_mem;`
+3. Confirm the live setting: `SHOW max_connections;`
 4. Run your one-off `entities` maintenance only after the new settings are live
 
 ## Start Services
@@ -206,9 +202,9 @@ ORDER BY indexname;
 
 Open [http://localhost:8081](http://localhost:8081) (Elasticvue).
 
-The Compose setup preloads one cluster endpoint:
+Add a cluster connection in the UI:
 - Name: `alpaca-es`
-- URI: `http://localhost:9200`
+- URI: `http://elasticsearch:9200`
 
 Quick index inspection commands:
 

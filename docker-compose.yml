@@ -3,23 +3,9 @@ services:
     container_name: alpaca-postgres
     image: postgres:${ALPACA_POSTGRES_VERSION:-18.3}
     shm_size: ${ALPACA_POSTGRES_SHM_SIZE:-1GB}
-    pull_policy: always
-    mem_limit: ${ALPACA_POSTGRES_MEM_LIMIT:-1g}
-    cpus: ${ALPACA_POSTGRES_CPUS:-1.0}
     command: >
       postgres
       -c max_connections=${ALPACA_POSTGRES_MAX_CONNECTIONS:-200}
-      -c shared_buffers=${ALPACA_POSTGRES_SHARED_BUFFERS:-256MB}
-      -c effective_cache_size=${ALPACA_POSTGRES_EFFECTIVE_CACHE_SIZE:-768MB}
-      -c work_mem=${ALPACA_POSTGRES_WORK_MEM:-2MB}
-      -c maintenance_work_mem=${ALPACA_POSTGRES_MAINTENANCE_WORK_MEM:-64MB}
-      -c random_page_cost=${ALPACA_POSTGRES_RANDOM_PAGE_COST:-1.25}
-      -c effective_io_concurrency=${ALPACA_POSTGRES_EFFECTIVE_IO_CONCURRENCY:-16}
-      -c checkpoint_completion_target=${ALPACA_POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
-      -c max_wal_size=${ALPACA_POSTGRES_MAX_WAL_SIZE:-1GB}
-      -c wal_compression=${ALPACA_POSTGRES_WAL_COMPRESSION:-on}
-      -c max_parallel_workers=${ALPACA_POSTGRES_MAX_PARALLEL_WORKERS:-2}
-      -c max_parallel_workers_per_gather=${ALPACA_POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER:-1}
     environment:
       POSTGRES_DB: ${ALPACA_POSTGRES_DB:-alpaca}
       POSTGRES_USER: ${ALPACA_POSTGRES_USER:-postgres}
@@ -44,23 +30,12 @@ services:
   adminer:
     container_name: alpaca-adminer
     image: adminer:${ALPACA_ADMINER_VERSION:-5}
-    pull_policy: always
-    mem_limit: ${ALPACA_ADMINER_MEM_LIMIT:-128m}
-    cpus: ${ALPACA_ADMINER_CPUS:-0.25}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      ADMINER_DEFAULT_SERVER: ${ALPACA_ADMINER_DEFAULT_SERVER:-postgres}
     ports:
       - "${ALPACA_ADMINER_PORT:-8080}:8080"
 
   elasticsearch:
     container_name: alpaca-elasticsearch
     image: docker.elastic.co/elasticsearch/elasticsearch:${ALPACA_ELASTIC_VERSION:-9.3.1}
-    pull_policy: always
-    mem_limit: ${ALPACA_ELASTIC_MEM_LIMIT:-1g}
-    cpus: ${ALPACA_ELASTIC_CPUS:-1.0}
     environment:
       discovery.type: single-node
       node.name: ${ALPACA_ELASTIC_NODE_NAME:-alpaca-es}
@@ -89,23 +64,14 @@ services:
   elasticvue:
     container_name: alpaca-elasticvue
     image: cars10/elasticvue:${ALPACA_ELASTICVUE_VERSION:-1.13.0}
-    pull_policy: always
-    mem_limit: ${ALPACA_ELASTICVUE_MEM_LIMIT:-128m}
-    cpus: ${ALPACA_ELASTICVUE_CPUS:-0.25}
-    depends_on:
-      - elasticsearch
     ports:
       - "${ALPACA_ELASTICVUE_PORT:-8081}:8080"
-    environment:
-      ELASTICVUE_CLUSTERS: '[{"name":"alpaca-es","uri":"http://localhost:9200"}]'
 
   api:
     container_name: alpaca-api
     build:
       context: .
     image: alpaca:latest
-    mem_limit: ${ALPACA_API_MEM_LIMIT:-768m}
-    cpus: ${ALPACA_API_CPUS:-1.0}
     working_dir: /workspace
     command: ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
