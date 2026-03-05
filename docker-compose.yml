@@ -48,7 +48,7 @@ services:
       ingest.geoip.downloader.enabled: "false"
       ES_JAVA_OPTS: -Xms${ALPACA_ELASTIC_HEAP_SIZE:-1g} -Xmx${ALPACA_ELASTIC_HEAP_SIZE:-1g}
       http.cors.enabled: "true"
-      http.cors.allow-origin: '"${ALPACA_ELASTIC_CORS_ALLOW_ORIGIN:-http://localhost:8081}"'
+      http.cors.allow-origin: '"${ALPACA_ELASTIC_CORS_ALLOW_ORIGIN:-*}"'
       http.cors.allow-credentials: "false"
     ulimits:
       memlock:
