@@ -32,6 +32,7 @@ DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 90.0
 DEFAULT_FINAL_REFRESH_INTERVAL = "1s"
 DEFAULT_FINAL_REPLICAS = 0
+DEFAULT_WAIT_INDEX_READY_TIMEOUT_SECONDS = 180.0
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -221,6 +222,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Skip counting source rows before indexing. "
             "Progress bar still updates but without fixed total."
+        ),
+    )
+    parser.add_argument(
+        "--wait-index-ready-timeout-seconds",
+        type=parse_positive_float,
+        default=DEFAULT_WAIT_INDEX_READY_TIMEOUT_SECONDS,
+        help=(
+            "How long to wait for the target index primary shard to become active before "
+            f"starting bulk indexing (default: {DEFAULT_WAIT_INDEX_READY_TIMEOUT_SECONDS})."
         ),
     )
     return parser.parse_args()
@@ -414,6 +424,39 @@ def _prepare_index(
         timeout_seconds=timeout_seconds,
         expected_statuses=(200,),
     )
+
+
+def _wait_for_index_ready(
+    *,
+    base_url: str,
+    index_name: str,
+    wait_timeout_seconds: float,
+    request_timeout_seconds: float,
+) -> None:
+    timeout_s = max(1, int(wait_timeout_seconds))
+    result = _es_request_json(
+        base_url=base_url,
+        method="GET",
+        path=(
+            f"/_cluster/health/{index_name}"
+            f"?wait_for_status=yellow&wait_for_active_shards=1&timeout={timeout_s}s"
+        ),
+        timeout_seconds=max(request_timeout_seconds, wait_timeout_seconds + 5.0),
+        expected_statuses=(200,),
+    )
+    timed_out = bool(result.get("timed_out"))
+    active_primary = int(result.get("active_primary_shards", 0))
+    status = str(result.get("status", "unknown"))
+    if timed_out or active_primary < 1 or status == "red":
+        details = (
+            f"status={status} timed_out={timed_out} "
+            f"active_primary_shards={active_primary} "
+            f"unassigned_shards={int(result.get('unassigned_shards', 0))} "
+            f"number_of_nodes={int(result.get('number_of_nodes', 0))}"
+        )
+        raise ElasticsearchIndexingError(
+            f"Index '{index_name}' is not ready for writes. {details}"
+        )
 
 
 def _finalize_index(
@@ -769,6 +812,17 @@ def _run(args: argparse.Namespace) -> int:
         f"max_inflight={max_inflight}",
         f"updated_since={args.updated_since or 'n/a'}",
     )
+    print(
+        "Waiting for Elasticsearch index shard to become active:",
+        f"index={index_name}",
+        f"timeout_seconds={args.wait_index_ready_timeout_seconds}",
+    )
+    _wait_for_index_ready(
+        base_url=elasticsearch_url,
+        index_name=index_name,
+        wait_timeout_seconds=float(args.wait_index_ready_timeout_seconds),
+        request_timeout_seconds=float(args.request_timeout_seconds),
+    )
 
     with ThreadPoolExecutor(max_workers=int(args.workers)) as pool:
         with tqdm(total=total_rows, desc="pg->es", unit="doc") as progress:
@@ -779,8 +833,8 @@ def _run(args: argparse.Namespace) -> int:
                 updated_since=args.updated_since,
             ):
                 docs_read += len(batch_docs)
-                progress.update(len(batch_docs))
                 progress.set_postfix(
+                    read=docs_read,
                     indexed=docs_indexed,
                     inflight=len(futures),
                     submitted=bulk_submitted,
@@ -808,7 +862,9 @@ def _run(args: argparse.Namespace) -> int:
                             return_when=FIRST_COMPLETED,
                         )
                         docs_indexed += indexed
+                        progress.update(indexed)
                         progress.set_postfix(
+                            read=docs_read,
                             indexed=docs_indexed,
                             inflight=len(futures),
                             submitted=bulk_submitted,
@@ -816,7 +872,9 @@ def _run(args: argparse.Namespace) -> int:
 
             indexed, futures = _drain_futures(futures, return_when=ALL_COMPLETED)
             docs_indexed += indexed
+            progress.update(indexed)
             progress.set_postfix(
+                read=docs_read,
                 indexed=docs_indexed,
                 inflight=len(futures),
                 submitted=bulk_submitted,
