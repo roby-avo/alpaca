@@ -63,11 +63,14 @@ services:
         source: ${ALPACA_ELASTIC_DATA_DIR:-./data/elasticsearch}
         target: /usr/share/elasticsearch/data
 
-  elasticvue:
-    container_name: alpaca-elasticvue
-    image: cars10/elasticvue:${ALPACA_ELASTICVUE_VERSION:-1.13.0}
+  kibana:
+    container_name: alpaca-kibana
+    image: docker.elastic.co/kibana/kibana:${ALPACA_KIBANA_VERSION:-9.3.1}
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+      XPACK_SECURITY_ENABLED: "false"
     ports:
-      - "${ALPACA_ELASTICVUE_PORT:-8081}:8080"
+      - "${ALPACA_KIBANA_PORT:-5601}:5601"
 
   api:
     container_name: alpaca-api

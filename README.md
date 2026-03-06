@@ -7,7 +7,7 @@ Deterministic entity lookup over Wikidata-style data using:
 - Elasticsearch (optional external index for integration experiments)
 - FastAPI (lookup API)
 - Adminer (optional UI for inspecting PostgreSQL data)
-- Elasticvue (lightweight UI for inspecting Elasticsearch data)
+- Kibana (UI for inspecting Elasticsearch data)
 
 ## Local Stack (No Auth)
 
@@ -48,14 +48,14 @@ Suggested order:
 ```bash
 docker compose pull
 docker compose build api
-docker compose up -d postgres adminer elasticsearch elasticvue api
+docker compose up -d postgres adminer elasticsearch kibana api
 ```
 
 Useful URLs:
 - API: [http://localhost:8000](http://localhost:8000)
 - Adminer (Postgres UI): [http://localhost:8080](http://localhost:8080)
 - Elasticsearch API: [http://localhost:9200](http://localhost:9200)
-- Elasticvue (Elasticsearch UI): [http://localhost:8081](http://localhost:8081)
+- Kibana (Elasticsearch UI): [http://localhost:5601](http://localhost:5601)
 
 ## Full Dump / Production Pipeline (Local Dump)
 
@@ -239,11 +239,10 @@ ORDER BY indexname;
 
 ## Explore Elasticsearch Data (UI + Quick Checks)
 
-Open [http://localhost:8081](http://localhost:8081) (Elasticvue).
+Open [http://localhost:5601](http://localhost:5601) (Kibana).
 
-Add a cluster connection in the UI:
-- Name: `alpaca-es`
-- URI: `http://elasticsearch:9200`
+Kibana is preconfigured to connect to `http://elasticsearch:9200` via Compose.
+Use **Dev Tools** for request/response testing.
 
 Quick index inspection commands:
 
