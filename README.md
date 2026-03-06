@@ -7,22 +7,22 @@ Deterministic entity lookup over Wikidata-style data using:
 - Elasticsearch (optional external index for integration experiments)
 - FastAPI (lookup API)
 - Adminer (optional UI for inspecting PostgreSQL data)
-- Kibana (UI for inspecting Elasticsearch data)
+- Elasticvue (UI for inspecting Elasticsearch data)
 
 ## Local Stack (No Auth)
 
 Local Docker setup is intentionally passwordless / no-auth for dev:
 - Postgres uses `trust`
 - Elasticsearch security is disabled (`xpack.security.enabled=false`)
-- Kibana security is disabled to match Elasticsearch and avoid security API errors
+- Elasticvue connects directly to Elasticsearch over CORS
 - Adminer connects to Postgres with empty password (same local dev assumption)
 - Postgres defaults to `max_connections=200` (as requested for compatibility)
 - Postgres keeps defaults for most internals; only `shm_size` and `max_connections`
   are explicitly configured in `.env.example`
 
-Kibana is now wired for repeatable Docker/VM startup:
+Elasticvue is kept intentionally simple here:
 - waits for Elasticsearch health before booting
-- uses the Docker image defaults for `server.host` and the internal Elasticsearch URL
+- preloads a single local cluster at `http://localhost:9200`
 
 ## Version Pinning
 
@@ -53,17 +53,17 @@ Suggested order:
 ```bash
 docker compose pull
 docker compose build api
-docker compose up -d postgres adminer elasticsearch kibana api
+docker compose up -d postgres adminer elasticsearch elasticvue api
 ```
 
 Useful URLs:
 - API: [http://localhost:8000](http://localhost:8000)
 - Adminer (Postgres UI): [http://localhost:8080](http://localhost:8080)
 - Elasticsearch API: [http://localhost:9200](http://localhost:9200)
-- Kibana (Elasticsearch UI): [http://localhost:5601](http://localhost:5601)
+- Elasticvue (Elasticsearch UI): [http://localhost:5601](http://localhost:5601)
 
-Kibana is intentionally kept minimal here. Use Dev Tools for Elasticsearch
-request/response testing instead of treating this stack as a full Elastic suite.
+Elasticvue is intentionally kept minimal here. Open the preloaded cluster and use
+the REST query tools directly instead of carrying a full Kibana setup.
 
 ## Full Dump / Production Pipeline (Local Dump)
 
@@ -247,12 +247,11 @@ ORDER BY indexname;
 
 ## Explore Elasticsearch Data (UI + Quick Checks)
 
-Open [http://localhost:5601](http://localhost:5601) (Kibana).
+Open [http://localhost:5601](http://localhost:5601) (Elasticvue).
 
-Kibana is preconfigured to connect to `http://elasticsearch:9200` via Compose.
-On fresh boots it now waits for Elasticsearch health instead of starting in the
-interactive setup path while Elasticsearch is still coming up.
-Use **Dev Tools** for request/response testing.
+Elasticvue starts after Elasticsearch is healthy and preloads
+`http://localhost:9200` as the local cluster. The current Elasticsearch CORS
+settings are already enough for this no-auth local setup.
 
 Quick index inspection commands:
 
