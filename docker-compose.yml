@@ -50,6 +50,8 @@ services:
       http.cors.enabled: "true"
       http.cors.allow-origin: '"${ALPACA_ELASTIC_CORS_ALLOW_ORIGIN:-*}"'
       http.cors.allow-credentials: "false"
+      http.cors.allow-headers: "X-Requested-With,Content-Type,Content-Length,Authorization"
+      http.cors.allow-methods: "OPTIONS,HEAD,GET,POST,PUT,DELETE"
     ulimits:
       memlock:
         soft: -1
