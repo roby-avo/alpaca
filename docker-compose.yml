@@ -62,13 +62,26 @@ services:
       - type: bind
         source: ${ALPACA_ELASTIC_DATA_DIR:-./data/elasticsearch}
         target: /usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:9200 >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
 
   kibana:
     container_name: alpaca-kibana
     image: docker.elastic.co/kibana/kibana:${ALPACA_KIBANA_VERSION:-9.3.1}
+    command: ["/usr/local/bin/kibana-docker", "--xpack.searchIndices.enabled=false"]
     environment:
-      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
       XPACK_SECURITY_ENABLED: "false"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
     ports:
       - "${ALPACA_KIBANA_PORT:-5601}:5601"
 

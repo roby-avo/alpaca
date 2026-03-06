@@ -14,10 +14,15 @@ Deterministic entity lookup over Wikidata-style data using:
 Local Docker setup is intentionally passwordless / no-auth for dev:
 - Postgres uses `trust`
 - Elasticsearch security is disabled (`xpack.security.enabled=false`)
+- Kibana security is disabled to match Elasticsearch and avoid security API errors
 - Adminer connects to Postgres with empty password (same local dev assumption)
 - Postgres defaults to `max_connections=200` (as requested for compatibility)
 - Postgres keeps defaults for most internals; only `shm_size` and `max_connections`
   are explicitly configured in `.env.example`
+
+Kibana is now wired for repeatable Docker/VM startup:
+- waits for Elasticsearch health before booting
+- uses the Docker image defaults for `server.host` and the internal Elasticsearch URL
 
 ## Version Pinning
 
@@ -56,6 +61,9 @@ Useful URLs:
 - Adminer (Postgres UI): [http://localhost:8080](http://localhost:8080)
 - Elasticsearch API: [http://localhost:9200](http://localhost:9200)
 - Kibana (Elasticsearch UI): [http://localhost:5601](http://localhost:5601)
+
+Kibana is intentionally kept minimal here. Use Dev Tools for Elasticsearch
+request/response testing instead of treating this stack as a full Elastic suite.
 
 ## Full Dump / Production Pipeline (Local Dump)
 
@@ -242,6 +250,8 @@ ORDER BY indexname;
 Open [http://localhost:5601](http://localhost:5601) (Kibana).
 
 Kibana is preconfigured to connect to `http://elasticsearch:9200` via Compose.
+On fresh boots it now waits for Elasticsearch health instead of starting in the
+interactive setup path while Elasticsearch is still coming up.
 Use **Dev Tools** for request/response testing.
 
 Quick index inspection commands:
