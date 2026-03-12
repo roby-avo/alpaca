@@ -4,18 +4,25 @@
 
 Deterministic entity lookup over Wikidata-style data using:
 - PostgreSQL (entity store, search indexes, query cache, live demo sample cache)
+- Elasticsearch (optional external index for integration experiments)
 - FastAPI (lookup API)
 - Adminer (optional UI for inspecting PostgreSQL data)
+- Elasticvue (UI for inspecting Elasticsearch data)
 
 ## Local Stack (No Auth)
 
 Local Docker setup is intentionally passwordless / no-auth for dev:
 - Postgres uses `trust`
+- Elasticsearch security is disabled (`xpack.security.enabled=false`)
+- Elasticvue connects directly to Elasticsearch over CORS
 - Adminer connects to Postgres with empty password (same local dev assumption)
-- Postgres defaults to `max_connections=200`, which is a conservative cap for the
-  current 8 vCPU / ~30 GiB VM target without an external pooler
-- The Compose Postgres service also exposes env-driven memory / planner / parallelism
-  tuning defaults for that VM profile; review `.env.example` before deploying
+- Postgres defaults to `max_connections=200` (as requested for compatibility)
+- Postgres keeps defaults for most internals; only `shm_size` and `max_connections`
+  are explicitly configured in `.env.example`
+
+Elasticvue is kept intentionally simple here:
+- waits for Elasticsearch health before booting
+- preloads a single local cluster at `http://localhost:9200`
 
 ## Version Pinning
 
@@ -27,21 +34,18 @@ Create your local `.env` first:
 cp .env.example .env
 ```
 
-Then adjust versions in `.env` after checking Docker Hub.
+Then adjust versions in `.env` after checking Docker Hub / Elastic registry.
 
 ## VM Postgres Rollout
 
 Before running one-off maintenance on a large `entities` table, deploy the Compose
-Postgres config update first so the instance restarts with the updated memory,
-planner, and parallelism settings from `.env.example`.
-
-The defaults are intentionally conservative for a shared VM. The heavier
-vacuum/autovacuum tuning should stay table-specific for `entities`, not global.
+Postgres config update first so the instance restarts with the current values from
+`.env.example`.
 
 Suggested order:
-1. Update `.env` on the VM with the Postgres tuning values.
+1. Update `.env` on the VM (`ALPACA_POSTGRES_SHM_SIZE`, `ALPACA_POSTGRES_MAX_CONNECTIONS`).
 2. Restart the Postgres service: `docker compose up -d postgres`
-3. Confirm the live settings: `SHOW shared_buffers; SHOW work_mem; SHOW maintenance_work_mem;`
+3. Confirm the live setting: `SHOW max_connections;`
 4. Run your one-off `entities` maintenance only after the new settings are live
 
 ## Start Services
@@ -49,12 +53,17 @@ Suggested order:
 ```bash
 docker compose pull
 docker compose build api
-docker compose up -d postgres adminer api
+docker compose up -d postgres adminer elasticsearch elasticvue api
 ```
 
 Useful URLs:
 - API: [http://localhost:8000](http://localhost:8000)
 - Adminer (Postgres UI): [http://localhost:8080](http://localhost:8080)
+- Elasticsearch API: [http://localhost:9200](http://localhost:9200)
+- Elasticvue (Elasticsearch UI): [http://localhost:5601](http://localhost:5601)
+
+Elasticvue is intentionally kept minimal here. Open the preloaded cluster and use
+the REST query tools directly instead of carrying a full Kibana setup.
 
 ## Full Dump / Production Pipeline (Local Dump)
 
@@ -114,6 +123,45 @@ Useful live demo tuning (to avoid upstream throttling):
 - `--sleep-seconds`
 - `--http-max-retries`
 - `--max-context-support-prefetch`
+
+## Mirror PostgreSQL Entities to Elasticsearch
+
+Elasticsearch indexing reads directly from PostgreSQL `entities`, so it indexes
+whatever is currently in Postgres (live demo sample or full production ingest).
+
+Start required services first:
+
+```bash
+docker compose up -d postgres elasticsearch api
+```
+
+Recreate and fully mirror the index:
+
+```bash
+docker compose exec api python -m src.index_postgres_to_elasticsearch \
+  --index-name alpaca-entities \
+  --recreate-index \
+  --workers 4 \
+  --batch-size 10000 \
+  --bulk-actions 2000
+```
+
+Incremental sync (only rows updated after a timestamp):
+
+```bash
+docker compose exec api python -m src.index_postgres_to_elasticsearch \
+  --index-name alpaca-entities \
+  --updated-since '2026-03-01T00:00:00Z'
+```
+
+Note: use `docker compose exec` (without `-T`) to keep TTY enabled so `tqdm`
+renders the live progress bar.
+
+Local helper script (same module):
+
+```bash
+./scripts/run_postgres_to_elasticsearch.sh --index-name alpaca-entities --recreate-index
+```
 
 ## PostgreSQL Search / Matching Logic
 
@@ -195,6 +243,26 @@ SELECT indexname, indexdef
 FROM pg_indexes
 WHERE tablename = 'entities'
 ORDER BY indexname;
+```
+
+## Explore Elasticsearch Data (UI + Quick Checks)
+
+Open [http://localhost:5601](http://localhost:5601) (Elasticvue).
+
+Elasticvue starts after Elasticsearch is healthy and preloads
+`http://localhost:9200` as the local cluster. The current Elasticsearch CORS
+settings are already enough for this no-auth local setup.
+
+Quick index inspection commands:
+
+```bash
+curl -s http://localhost:9200/_cat/indices?v
+```
+
+```bash
+curl -s http://localhost:9200/<index_name>/_search \
+  -H 'Content-Type: application/json' \
+  -d '{"size":5,"query":{"match_all":{}}}'
 ```
 
 ## Storage Estimation (Sample + Replicate)

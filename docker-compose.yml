@@ -1,23 +1,11 @@
 services:
   postgres:
     container_name: alpaca-postgres
-    image: postgres:${ALPACA_POSTGRES_VERSION:-18.1}
-    shm_size: ${ALPACA_POSTGRES_SHM_SIZE:-4gb}
-    pull_policy: always
+    image: postgres:${ALPACA_POSTGRES_VERSION:-18.3}
+    shm_size: ${ALPACA_POSTGRES_SHM_SIZE:-1GB}
     command: >
       postgres
       -c max_connections=${ALPACA_POSTGRES_MAX_CONNECTIONS:-200}
-      -c shared_buffers=${ALPACA_POSTGRES_SHARED_BUFFERS:-4GB}
-      -c effective_cache_size=${ALPACA_POSTGRES_EFFECTIVE_CACHE_SIZE:-8GB}
-      -c work_mem=${ALPACA_POSTGRES_WORK_MEM:-8MB}
-      -c maintenance_work_mem=${ALPACA_POSTGRES_MAINTENANCE_WORK_MEM:-1GB}
-      -c random_page_cost=${ALPACA_POSTGRES_RANDOM_PAGE_COST:-1.25}
-      -c effective_io_concurrency=${ALPACA_POSTGRES_EFFECTIVE_IO_CONCURRENCY:-32}
-      -c checkpoint_completion_target=${ALPACA_POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
-      -c max_wal_size=${ALPACA_POSTGRES_MAX_WAL_SIZE:-4GB}
-      -c wal_compression=${ALPACA_POSTGRES_WAL_COMPRESSION:-on}
-      -c max_parallel_workers=${ALPACA_POSTGRES_MAX_PARALLEL_WORKERS:-4}
-      -c max_parallel_workers_per_gather=${ALPACA_POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER:-1}
     environment:
       POSTGRES_DB: ${ALPACA_POSTGRES_DB:-alpaca}
       POSTGRES_USER: ${ALPACA_POSTGRES_USER:-postgres}
@@ -28,17 +16,74 @@ services:
       - type: bind
         source: ${ALPACA_POSTGRES_DATA_DIR:-./data/postgres}
         target: /var/lib/postgresql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${ALPACA_POSTGRES_USER:-postgres} -d ${ALPACA_POSTGRES_DB:-alpaca}",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   adminer:
     container_name: alpaca-adminer
     image: adminer:${ALPACA_ADMINER_VERSION:-5}
-    pull_policy: always
-    depends_on:
-      - postgres
-    environment:
-      ADMINER_DEFAULT_SERVER: ${ALPACA_ADMINER_DEFAULT_SERVER:-postgres}
     ports:
       - "${ALPACA_ADMINER_PORT:-8080}:8080"
+
+  elasticsearch:
+    container_name: alpaca-elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ALPACA_ELASTIC_VERSION:-9.3.1}
+    environment:
+      discovery.type: single-node
+      node.name: ${ALPACA_ELASTIC_NODE_NAME:-alpaca-es}
+      cluster.name: ${ALPACA_ELASTIC_CLUSTER_NAME:-alpaca}
+      bootstrap.memory_lock: "true"
+      xpack.security.enabled: "false"
+      xpack.ml.enabled: "false"
+      xpack.monitoring.collection.enabled: "false"
+      xpack.license.self_generated.type: basic
+      ingest.geoip.downloader.enabled: "false"
+      ES_JAVA_OPTS: -Xms${ALPACA_ELASTIC_HEAP_SIZE:-1g} -Xmx${ALPACA_ELASTIC_HEAP_SIZE:-1g}
+      http.cors.enabled: "true"
+      http.cors.allow-origin: '"${ALPACA_ELASTIC_CORS_ALLOW_ORIGIN:-*}"'
+      http.cors.allow-credentials: "false"
+      http.cors.allow-headers: "X-Requested-With,Content-Type,Content-Length,Authorization"
+      http.cors.allow-methods: "OPTIONS,HEAD,GET,POST,PUT,DELETE"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "${ALPACA_ELASTIC_PORT:-9200}:9200"
+    volumes:
+      - type: bind
+        source: ${ALPACA_ELASTIC_DATA_DIR:-./data/elasticsearch}
+        target: /usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS http://localhost:9200 >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  elasticvue:
+    container_name: alpaca-elasticvue
+    image: cars10/elasticvue:${ALPACA_ELASTICVUE_VERSION:-1.13.0}
+    environment:
+      ELASTICVUE_CLUSTERS: >-
+        [{"name":"alpaca-local","uri":"http://localhost:${ALPACA_ELASTIC_PORT:-9200}"}]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    ports:
+      - "${ALPACA_ELASTICVUE_PORT:-8080}:8080"
 
   api:
     container_name: alpaca-api
@@ -48,13 +93,15 @@ services:
     working_dir: /workspace
     command: ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       ALPACA_DUMP_PATH: ${ALPACA_DUMP_PATH:-/mnt/input/latest-all.json.bz2}
       ALPACA_NER_TYPES_PATH: ${ALPACA_NER_TYPES_PATH:-}
       ALPACA_LABELS_DB_PATH: ${ALPACA_LABELS_DB_PATH:-/workspace/data/output/wikidata_labels.sqlite}
       ALPACA_BOW_OUTPUT_PATH: ${ALPACA_BOW_OUTPUT_PATH:-/workspace/data/output/bow_docs.jsonl.gz}
       ALPACA_POSTGRES_DSN: ${ALPACA_POSTGRES_DSN:-postgresql://postgres@postgres:5432/alpaca}
+      ALPACA_ELASTICSEARCH_URL: ${ALPACA_ELASTICSEARCH_URL:-http://elasticsearch:9200}
     ports:
       - "${ALPACA_API_PORT:-8000}:8000"
     volumes:
