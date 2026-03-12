@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run the deterministic alpaca pipeline: dump -> Postgres entities (pass1) -> "
-            "Postgres deterministic context build (pass2) -> Postgres search indexes."
+            "Postgres triples ingest -> Postgres support indexes (pass2 kept as a compatibility no-op)."
         )
     )
     parser.add_argument("--dump-path", help="Input dump path (.json/.json.gz/.json.bz2).")
@@ -66,20 +66,20 @@ def parse_args() -> argparse.Namespace:
         "--context-batch-size",
         type=parse_positive_int,
         default=1000,
-        help="Entities per Postgres context batch in pass2 (default: 1000).",
+        help="Deprecated compatibility option; pass2 no longer materializes context strings.",
     )
     parser.add_argument(
         "--workers",
         type=parse_positive_int,
         default=max(1, min(8, (os.cpu_count() or 1))),
-        help="Parallel worker count for pass1 transform and pass2 context build.",
+        help="Parallel worker count for pass1 transform and any compatibility pass2 work.",
     )
 
     parser.add_argument("--skip-pass1", action="store_true", help="Skip Postgres pass1 ingestion.")
     parser.add_argument(
         "--skip-pass2",
         action="store_true",
-        help="Skip Postgres pass2 deterministic context build.",
+        help="Skip the compatibility pass2 no-op.",
     )
     parser.add_argument(
         "--disable-ner-classifier",
@@ -89,19 +89,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--languages",
         default="en",
-        help="Comma-separated language allowlist for labels/descriptions (default: en).",
+        help="Comma-separated language allowlist used for lexical typing inputs (default: en).",
     )
     parser.add_argument(
         "--max-aliases-per-language",
         type=parse_non_negative_int,
         default=8,
-        help="Max aliases stored per language (default: 8, 0 disables aliases).",
-    )
-    parser.add_argument(
-        "--max-context-object-ids",
-        type=parse_non_negative_int,
-        default=32,
-        help="Max claim object IDs retained per entity (default: 32).",
+        help="Max aliases per language used for lexical typing (default: 8).",
     )
     return parser.parse_args()
 
@@ -121,11 +115,8 @@ def main() -> int:
                 limit=args.limit,
                 language_allowlist=language_allowlist,
                 max_aliases_per_language=args.max_aliases_per_language,
-                max_context_object_ids=args.max_context_object_ids,
                 disable_ner_classifier=args.disable_ner_classifier,
                 worker_count=args.workers,
-                # Standard pipeline runs pass2, which rebuilds search_vector after context enrichment.
-                build_search_vector=bool(args.skip_pass2),
                 expected_entity_total=(args.expected_entity_total or None),
             )
             if pass1_status != 0:
@@ -143,7 +134,7 @@ def main() -> int:
         store = PostgresStore(postgres_dsn)
         store.ensure_schema()
         store.ensure_search_indexes()
-        # Finalize the default lean lookup layout (keeps entity_context_inputs for traceability).
+        # Finalize the default lean lookup layout while keeping the single-table entities layout intact.
         store.compact_table_for_lookup(
             "entities",
             drop_cross_refs_trgm_index=True,
@@ -152,7 +143,7 @@ def main() -> int:
             analyze=True,
         )
 
-        print("Pipeline completed successfully (Postgres-only search backend).")
+        print("Pipeline completed successfully (Postgres entities + triples ready for Elasticsearch export).")
         return 0
     except (FileNotFoundError, ValueError, PostgresStoreError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

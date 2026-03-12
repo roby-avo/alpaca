@@ -191,6 +191,9 @@ def rerank_candidates(
         label = candidate.get("label") if isinstance(candidate.get("label"), str) else ""
         label_values: list[str] = [label] if label else []
         variant_values: list[str] = []
+        labels = candidate.get("labels")
+        if isinstance(labels, list):
+            variant_values.extend([item for item in labels if isinstance(item, str)])
         aliases = candidate.get("aliases")
         if isinstance(aliases, list):
             variant_values.extend([item for item in aliases if isinstance(item, str)])
@@ -204,9 +207,6 @@ def rerank_candidates(
             name_variants = candidate.get("name_variants")
             if isinstance(name_variants, list):
                 variant_values.extend([item for item in name_variants if isinstance(item, str)])
-            labels = candidate.get("labels")
-            if isinstance(labels, list):
-                variant_values.extend([item for item in labels if isinstance(item, str)])
         exact_name_match = mention_norm in {
             normalize_exact_text(value) for value in [*label_values, *variant_values] if value
         }
@@ -269,16 +269,14 @@ class EntityLookupService:
         self,
         mention: str,
         *,
-        context_terms: Sequence[str],
-        crosslink_terms: Sequence[str],
+        crosslink_values: Sequence[str],
         coarse_hints: Sequence[str],
         fine_hints: Sequence[str],
         size: int,
     ) -> list[dict[str, Any]]:
         return self.store.search_candidates_fuzzy(
             mention_query=mention,
-            context_query=" ".join(context_terms),
-            crosslink_query=" ".join(crosslink_terms),
+            crosslink_exact=crosslink_values,
             coarse_hints=coarse_hints,
             fine_hints=fine_hints,
             size=size,
@@ -347,8 +345,7 @@ class EntityLookupService:
         strategy = "fuzzy"
         fuzzy_hits = self._fuzzy_search(
             mention_value,
-            context_terms=context_terms,
-            crosslink_terms=crosslink_terms,
+            crosslink_values=crosslink_values,
             coarse_hints=normalized_coarse,
             fine_hints=normalized_fine,
             size=max(limit, DEFAULT_FUZZY_TOPK),

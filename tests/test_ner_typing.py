@@ -5,6 +5,20 @@ import unittest
 from src.ner_typing import infer_ner_types
 
 
+def _statement_for_item_qid(numeric_id: int) -> dict[str, object]:
+    return {
+        "mainsnak": {
+            "snaktype": "value",
+            "datavalue": {
+                "value": {
+                    "entity-type": "item",
+                    "numeric-id": int(numeric_id),
+                }
+            },
+        }
+    }
+
+
 class NerTypingTests(unittest.TestCase):
     def test_property_id_maps_to_relation_property(self) -> None:
         coarse, fine, source = infer_ner_types(
@@ -23,6 +37,7 @@ class NerTypingTests(unittest.TestCase):
             labels={"en": "Douglas Adams"},
             aliases={},
             descriptions={"en": "English writer and author"},
+            claims={"P31": [_statement_for_item_qid(5)]},
         )
         self.assertIn("PERSON", coarse)
         self.assertIn("HUMAN", fine)
@@ -53,6 +68,7 @@ class NerTypingTests(unittest.TestCase):
             labels={"en": "Barack Obama"},
             aliases={},
             descriptions={"en": "president of the United States from 2009 to 2017"},
+            claims={"P31": [_statement_for_item_qid(5)]},
         )
         self.assertIn("PERSON", coarse)
         self.assertIn("HUMAN", fine)
@@ -106,9 +122,32 @@ class NerTypingTests(unittest.TestCase):
             labels={"en": "Jimmy Wales"},
             aliases={},
             descriptions={"en": "co-founder of Wikipedia (born 1966)"},
+            claims={"P31": [_statement_for_item_qid(5)]},
         )
         self.assertIn("PERSON", coarse)
         self.assertIn("HUMAN", fine)
+
+    def test_filmmaker_description_maps_to_person_even_without_claims(self) -> None:
+        coarse, fine, _ = infer_ner_types(
+            entity_id="Q25191",
+            labels={"en": "Christopher Nolan"},
+            aliases={"en": ["Christopher Edward Nolan"]},
+            descriptions={"en": "British-American filmmaker (born 1970)"},
+        )
+        self.assertIn("PERSON", coarse)
+        self.assertIn("PERSON", fine)
+
+    def test_instance_of_human_overrides_lexical_fallback(self) -> None:
+        coarse, fine, source = infer_ner_types(
+            entity_id="Q25191",
+            labels={"en": "Christopher Nolan"},
+            aliases={"en": ["Christopher Edward Nolan"]},
+            descriptions={"en": "British-American filmmaker (born 1970)"},
+            claims={"P31": [_statement_for_item_qid(5)]},
+        )
+        self.assertEqual(coarse, ["PERSON"])
+        self.assertEqual(fine, ["HUMAN"])
+        self.assertEqual(source, "claims_p31_human_v1")
 
     def test_internet_meme_maps_to_work_meme(self) -> None:
         coarse, fine, _ = infer_ner_types(
@@ -153,7 +192,7 @@ class NerTypingTests(unittest.TestCase):
             descriptions={"en": "xkcdqv"},
         )
         self.assertEqual(coarse, ["MISC"])
-        self.assertEqual(fine, ["ENTITY"])
+        self.assertEqual(fine, ["MISC"])
 
 
 if __name__ == "__main__":

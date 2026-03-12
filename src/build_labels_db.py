@@ -4,7 +4,7 @@ import argparse
 import json
 import sqlite3
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .common import (
@@ -219,6 +219,7 @@ def run(
                         labels=payload["labels"],
                         aliases=payload["aliases"],
                         descriptions=payload["descriptions"],
+                        claims=entity.get("claims") if isinstance(entity.get("claims"), Mapping) else None,
                     )
                     payload["coarse_type"] = coarse_types[0] if coarse_types else ""
                     payload["fine_type"] = fine_types[0] if fine_types else ""

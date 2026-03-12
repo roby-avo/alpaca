@@ -4,7 +4,7 @@ import argparse
 import os
 import sys
 from collections.abc import Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -19,6 +19,7 @@ from .common import (
     is_supported_entity_id,
     iter_wikidata_entities,
     keep_tqdm_total_ahead,
+    normalize_text,
     parse_language_allowlist,
     resolve_dump_path,
     resolve_postgres_dsn,
@@ -27,10 +28,27 @@ from .common import (
     tqdm,
 )
 from .ner_typing import infer_ner_types
-from .postgres_store import EntityRecord, PostgresStore
-
-
-DEFAULT_MAX_CONTEXT_OBJECT_IDS = 32
+from .postgres_store import (
+    EntityRecord,
+    EntityTripleRecord,
+    PostgresStore,
+    build_entity_context_string,
+)
+PRIMARY_LABEL_LANGUAGE_PREFERENCE = ("en", "mul")
+NON_ARTICLE_WIKIPEDIA_SITES = frozenset(
+    {
+        "commonswiki",
+        "foundationwiki",
+        "incubatorwiki",
+        "mediawikiwiki",
+        "metawiki",
+        "outreachwiki",
+        "specieswiki",
+        "strategywiki",
+        "testwiki",
+        "wikidatawiki",
+    }
+)
 DISAMBIGUATION_INSTANCE_OF_QIDS = frozenset(
     {
         "Q4167410",   # Wikimedia disambiguation page
@@ -43,6 +61,8 @@ CLASSLIKE_INSTANCE_OF_QIDS = frozenset(
         "Q24017414",  # first-order class
     }
 )
+HUMAN_QID = "Q5"
+_build_entity_context_string = build_entity_context_string
 
 
 def parse_non_negative_int(raw: str) -> int:
@@ -63,9 +83,10 @@ def parse_positive_int(raw: str) -> int:
 
 
 def _pick_primary_label(labels: Mapping[str, str]) -> str:
-    english = labels.get("en")
-    if isinstance(english, str) and english.strip():
-        return english.strip()
+    for language in PRIMARY_LABEL_LANGUAGE_PREFERENCE:
+        preferred = labels.get(language)
+        if isinstance(preferred, str) and preferred.strip():
+            return preferred.strip()
     for language in sorted(labels):
         value = labels[language]
         if isinstance(value, str):
@@ -75,24 +96,111 @@ def _pick_primary_label(labels: Mapping[str, str]) -> str:
     return ""
 
 
-def _extract_cross_refs(entity: Mapping[str, Any]) -> dict[str, Any]:
+def _pick_primary_label_language(labels: Mapping[str, str]) -> str:
+    for language in PRIMARY_LABEL_LANGUAGE_PREFERENCE:
+        value = labels.get(language)
+        if isinstance(value, str) and value.strip():
+            return language
+    for language in sorted(labels):
+        value = labels[language]
+        if isinstance(value, str) and value.strip():
+            return language
+    return ""
+
+
+def _is_wikipedia_article_site(site_key: str) -> bool:
+    return site_key.endswith("wiki") and site_key not in NON_ARTICLE_WIKIPEDIA_SITES
+
+
+def _extract_sitelink_title(payload: Any) -> str:
+    if not isinstance(payload, Mapping):
+        return ""
+    title = payload.get("title")
+    if not isinstance(title, str):
+        return ""
+    return title.strip()
+
+
+def _preferred_wikipedia_sitelink(
+    raw_sitelinks: Mapping[str, Any],
+    *,
+    preferred_language: str,
+) -> tuple[str, str] | None:
+    candidates: dict[str, str] = {}
+    for site_key, payload in raw_sitelinks.items():
+        if not isinstance(site_key, str) or not _is_wikipedia_article_site(site_key):
+            continue
+        title = _extract_sitelink_title(payload)
+        if title:
+            candidates[site_key] = title
+    if not candidates:
+        return None
+
+    if "enwiki" in candidates:
+        return "enwiki", candidates["enwiki"]
+
+    if preferred_language and preferred_language != "mul":
+        preferred_site = f"{preferred_language}wiki"
+        if preferred_site in candidates:
+            return preferred_site, candidates[preferred_site]
+
+    first_site = sorted(candidates)[0]
+    return first_site, candidates[first_site]
+
+
+def _site_key_to_wikipedia_host(site_key: str) -> str:
+    language_key = site_key[:-4].strip().replace("_", "-")
+    return f"{language_key}.wikipedia.org" if language_key else ""
+
+
+def _site_key_to_dbpedia_host(site_key: str) -> str:
+    language_key = site_key[:-4].strip().replace("_", "-").lower()
+    if not language_key:
+        return ""
+    if language_key == "en":
+        return "dbpedia.org"
+    return f"{language_key}.dbpedia.org"
+
+
+def _build_wikipedia_url(site_key: str, title: str) -> str:
+    host = _site_key_to_wikipedia_host(site_key)
+    if not host:
+        return ""
+    wiki_path = quote(title.replace(" ", "_"), safe="()'!*,._-")
+    return f"https://{host}/wiki/{wiki_path}"
+
+
+def _build_dbpedia_url(site_key: str, title: str) -> str:
+    host = _site_key_to_dbpedia_host(site_key)
+    if not host:
+        return ""
+    return f"https://{host}/resource/{quote(title.replace(' ', '_'))}"
+
+
+def _extract_cross_refs(
+    entity: Mapping[str, Any],
+    *,
+    preferred_language: str,
+) -> dict[str, Any]:
     raw_sitelinks = entity.get("sitelinks")
     cross_refs: dict[str, Any] = {}
     if not isinstance(raw_sitelinks, Mapping):
         return cross_refs
 
-    enwiki_payload = raw_sitelinks.get("enwiki")
-    if not isinstance(enwiki_payload, Mapping):
+    preferred_sitelink = _preferred_wikipedia_sitelink(
+        raw_sitelinks,
+        preferred_language=preferred_language,
+    )
+    if preferred_sitelink is None:
         return cross_refs
 
-    en_title = enwiki_payload.get("title")
-    if not isinstance(en_title, str) or not en_title.strip():
-        return cross_refs
-
-    title = en_title.strip()
-    wiki_path = quote(title.replace(" ", "_"), safe="()'!*,._-")
-    cross_refs["wikipedia"] = f"https://en.wikipedia.org/wiki/{wiki_path}"
-    cross_refs["dbpedia"] = f"https://dbpedia.org/resource/{quote(title.replace(' ', '_'))}"
+    site_key, title = preferred_sitelink
+    wikipedia_url = _build_wikipedia_url(site_key, title)
+    if wikipedia_url:
+        cross_refs["wikipedia"] = wikipedia_url
+    dbpedia_url = _build_dbpedia_url(site_key, title)
+    if dbpedia_url:
+        cross_refs["dbpedia"] = dbpedia_url
     return cross_refs
 
 
@@ -117,6 +225,88 @@ def _claim_object_ids_for_property(
         return []
     wrapper = {"claims": {property_id: selected}}
     return extract_claim_object_ids(wrapper, limit=limit)
+
+
+def _extract_entity_id_from_statement(statement: Mapping[str, Any]) -> str | None:
+    mainsnak = statement.get("mainsnak")
+    if not isinstance(mainsnak, Mapping) or mainsnak.get("snaktype") != "value":
+        return None
+    datavalue = mainsnak.get("datavalue")
+    if not isinstance(datavalue, Mapping):
+        return None
+    raw_value = datavalue.get("value")
+    if not isinstance(raw_value, Mapping):
+        return None
+
+    raw_id = raw_value.get("id")
+    if isinstance(raw_id, str) and is_supported_entity_id(raw_id.strip()):
+        return raw_id.strip()
+
+    numeric_id = raw_value.get("numeric-id")
+    if not isinstance(numeric_id, int) or numeric_id <= 0:
+        return None
+    entity_type = raw_value.get("entity-type")
+    if entity_type == "item":
+        return f"Q{numeric_id}"
+    if entity_type == "property":
+        return f"P{numeric_id}"
+    return None
+
+
+def extract_entity_triples(entity: Mapping[str, Any]) -> list[EntityTripleRecord]:
+    entity_id = entity.get("id")
+    claims = entity.get("claims")
+    if not isinstance(entity_id, str) or not is_supported_entity_id(entity_id):
+        return []
+    if not isinstance(claims, Mapping):
+        return []
+
+    triples: list[EntityTripleRecord] = []
+    seen: set[tuple[str, str, str]] = set()
+    for predicate_pid in sorted(claims):
+        statements = claims.get(predicate_pid)
+        if not isinstance(predicate_pid, str) or not predicate_pid.startswith("P"):
+            continue
+        if not isinstance(statements, Sequence) or isinstance(statements, (str, bytes, bytearray)):
+            continue
+        for statement in statements:
+            if not isinstance(statement, Mapping):
+                continue
+            object_id = _extract_entity_id_from_statement(statement)
+            if not object_id:
+                continue
+            triple_key = (entity_id, predicate_pid, object_id)
+            if triple_key in seen:
+                continue
+            seen.add(triple_key)
+            triples.append(
+                EntityTripleRecord(
+                    subject_qid=entity_id,
+                    predicate_pid=predicate_pid,
+                    object_qid=object_id,
+                )
+            )
+    return triples
+
+
+def _extract_entity_type_qids(entity: Mapping[str, Any]) -> list[str]:
+    type_qids: list[str] = []
+    seen: set[str] = set()
+
+    for qid in _claim_object_ids_for_property(entity, "P31", limit=32):
+        if qid in seen:
+            continue
+        seen.add(qid)
+        type_qids.append(qid)
+
+    if HUMAN_QID in seen:
+        for qid in _claim_object_ids_for_property(entity, "P106", limit=32):
+            if qid in seen:
+                continue
+            seen.add(qid)
+            type_qids.append(qid)
+
+    return type_qids
 
 
 def infer_item_category(entity: Mapping[str, Any]) -> str:
@@ -165,7 +355,6 @@ def transform_entity_to_record(
     *,
     language_allowlist: Sequence[str],
     max_aliases_per_language: int,
-    max_context_object_ids: int,
     disable_ner_classifier: bool,
 ) -> EntityRecord | None:
     entity_id = entity.get("id")
@@ -173,25 +362,31 @@ def transform_entity_to_record(
         return None
 
     payload = extract_multilingual_payload(entity)
-    labels = select_text_map_languages(
-        payload.get("labels", {}),
+    all_labels = payload.get("labels", {})
+    all_aliases = payload.get("aliases", {})
+    all_descriptions = payload.get("descriptions", {})
+    labels_for_typing = select_text_map_languages(
+        all_labels,
         language_allowlist,
         fallback_to_any=True,
     )
-    aliases = select_alias_map_languages(
-        payload.get("aliases", {}),
+    aliases_for_typing = select_alias_map_languages(
+        all_aliases,
         language_allowlist,
         max_aliases_per_language=max_aliases_per_language,
         fallback_to_any=False,
     )
     descriptions = select_text_map_languages(
-        payload.get("descriptions", {}),
+        all_descriptions,
         language_allowlist,
         fallback_to_any=True,
     )
-    label = _pick_primary_label(labels)
+    label = _pick_primary_label(all_labels)
     if not label:
         return None
+    raw_description = all_descriptions.get("en")
+    description = normalize_text(raw_description) if isinstance(raw_description, str) else ""
+    description = description or None
 
     if disable_ner_classifier:
         coarse_type = ""
@@ -199,30 +394,34 @@ def transform_entity_to_record(
     else:
         coarse_types, fine_types, _source = infer_ner_types(
             entity_id=entity_id,
-            labels=labels,
-            aliases=aliases,
+            labels=labels_for_typing,
+            aliases=aliases_for_typing,
             descriptions=descriptions,
+            claims=entity.get("claims") if isinstance(entity.get("claims"), Mapping) else None,
         )
         coarse_type = coarse_types[0] if coarse_types else ""
         fine_type = fine_types[0] if fine_types else ""
 
-    relation_object_qids = extract_claim_object_ids(entity, limit=max_context_object_ids)
+    type_qids = _extract_entity_type_qids(entity)
     popularity = _extract_popularity(entity)
-    cross_refs = _extract_cross_refs(entity)
+    cross_refs = _extract_cross_refs(
+        entity,
+        preferred_language=_pick_primary_label_language(all_labels),
+    )
     item_category = infer_item_category(entity)
 
     return EntityRecord(
         qid=entity_id,
         label=label,
-        labels=labels,
-        aliases=aliases,
-        relation_object_qids=relation_object_qids,
+        labels=all_labels,
+        aliases=all_aliases,
+        description=description,
+        types=type_qids,
         item_category=item_category,
         coarse_type=coarse_type,
         fine_type=fine_type,
         popularity=popularity,
         cross_refs=cross_refs,
-        context_string="",
     )
 
 
@@ -233,27 +432,29 @@ def _flush_transform_batch(
     executor: ThreadPoolExecutor | None,
     language_allowlist: Sequence[str],
     max_aliases_per_language: int,
-    max_context_object_ids: int,
     disable_ner_classifier: bool,
-    build_search_vector: bool,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     if not raw_entities:
-        return 0, 0
+        return 0, 0, 0
 
     typed_rows = 0
     records: list[EntityRecord] = []
+    triples: list[EntityTripleRecord] = []
 
-    def _transform(entity: Mapping[str, Any]) -> EntityRecord | None:
-        return transform_entity_to_record(
-            entity,
-            language_allowlist=language_allowlist,
-            max_aliases_per_language=max_aliases_per_language,
-            max_context_object_ids=max_context_object_ids,
-            disable_ner_classifier=disable_ner_classifier,
+    def _transform(entity: Mapping[str, Any]) -> tuple[EntityRecord | None, list[EntityTripleRecord]]:
+        return (
+            transform_entity_to_record(
+                entity,
+                language_allowlist=language_allowlist,
+                max_aliases_per_language=max_aliases_per_language,
+                disable_ner_classifier=disable_ner_classifier,
+            ),
+            extract_entity_triples(entity),
         )
 
     if executor is not None and len(raw_entities) > 1:
-        for record in executor.map(_transform, raw_entities):
+        for record, entity_triples in executor.map(_transform, raw_entities):
+            triples.extend(entity_triples)
             if record is None:
                 continue
             if record.coarse_type or record.fine_type:
@@ -261,15 +462,22 @@ def _flush_transform_batch(
             records.append(record)
     else:
         for entity in raw_entities:
-            record = _transform(entity)
+            record, entity_triples = _transform(entity)
+            triples.extend(entity_triples)
             if record is None:
                 continue
             if record.coarse_type or record.fine_type:
                 typed_rows += 1
             records.append(record)
 
-    stored = store.upsert_entities(records, build_search_vector=build_search_vector)
-    return stored, typed_rows
+    stored = store.upsert_entities(records)
+    subject_qids = [
+        entity.get("id")
+        for entity in raw_entities
+        if isinstance(entity.get("id"), str) and is_supported_entity_id(entity.get("id"))
+    ]
+    stored_triples = store.replace_entity_triples(subject_qids=subject_qids, rows=triples)
+    return stored, typed_rows, stored_triples
 
 
 def run_pass1(
@@ -280,18 +488,14 @@ def run_pass1(
     limit: int,
     language_allowlist: Sequence[str] | None = None,
     max_aliases_per_language: int = 8,
-    max_context_object_ids: int = DEFAULT_MAX_CONTEXT_OBJECT_IDS,
     disable_ner_classifier: bool = False,
     worker_count: int | None = None,
-    build_search_vector: bool = True,
     expected_entity_total: int | None = None,
 ) -> int:
     if batch_size <= 0:
         raise ValueError("--batch-size must be > 0")
     if max_aliases_per_language < 0:
         raise ValueError("--max-aliases-per-language must be >= 0")
-    if max_context_object_ids < 0:
-        raise ValueError("--max-context-object-ids must be >= 0")
     if expected_entity_total is not None and expected_entity_total <= 0:
         raise ValueError("--expected-entity-total must be > 0 when provided")
 
@@ -309,6 +513,7 @@ def run_pass1(
     parsed_entities = 0
     stored_rows = 0
     typed_rows = 0
+    stored_triples = 0
     pending_entities: list[dict[str, Any]] = []
 
     if expected_entity_total is not None:
@@ -336,35 +541,33 @@ def run_pass1(
                 pending_entities.append(entity)
 
                 if len(pending_entities) >= batch_size:
-                    stored, typed = _flush_transform_batch(
+                    stored, typed, triples = _flush_transform_batch(
                         store,
                         pending_entities,
                         executor=executor,
                         language_allowlist=active_languages,
                         max_aliases_per_language=max_aliases_per_language,
-                        max_context_object_ids=max_context_object_ids,
                         disable_ner_classifier=disable_ner_classifier,
-                        build_search_vector=build_search_vector,
                     )
                     stored_rows += stored
                     typed_rows += typed
+                    stored_triples += triples
                     pending_entities.clear()
-                    progress.set_postfix(stored=stored_rows)
+                    progress.set_postfix(stored=stored_rows, triples=stored_triples)
 
-            stored, typed = _flush_transform_batch(
+            stored, typed, triples = _flush_transform_batch(
                 store,
                 pending_entities,
                 executor=executor,
                 language_allowlist=active_languages,
                 max_aliases_per_language=max_aliases_per_language,
-                max_context_object_ids=max_context_object_ids,
                 disable_ner_classifier=disable_ner_classifier,
-                build_search_vector=build_search_vector,
             )
             stored_rows += stored
             typed_rows += typed
+            stored_triples += triples
             pending_entities.clear()
-            progress.set_postfix(stored=stored_rows)
+            progress.set_postfix(stored=stored_rows, triples=stored_triples)
             finalize_tqdm_total(progress)
     finally:
         if executor is not None:
@@ -374,40 +577,12 @@ def run_pass1(
         "Completed Postgres pass1:",
         f"parsed={parsed_entities}",
         f"stored={stored_rows}",
+        f"triples={stored_triples}",
         f"typed={typed_rows}",
         f"languages={','.join(active_languages)}",
         f"workers={workers}",
-        f"build_search_vector={build_search_vector}",
     )
     return 0
-
-
-def _build_context_string_for_qids(postgres_dsn: str, qids: Sequence[str]) -> int:
-    store = PostgresStore(postgres_dsn)
-    batch = store.load_context_inputs(qids)
-
-    related_ids: list[str] = []
-    seen: set[str] = set()
-    for _qid, relation_object_qids in batch:
-        for object_qid in relation_object_qids:
-            if object_qid in seen:
-                continue
-            seen.add(object_qid)
-            related_ids.append(object_qid)
-
-    label_map = store.resolve_labels(related_ids)
-
-    updates: list[tuple[str, str]] = []
-    for qid, relation_object_qids in batch:
-        context_tokens = {
-            label_map[object_qid].strip()
-            for object_qid in relation_object_qids
-            if object_qid in label_map and label_map[object_qid].strip()
-        }
-        context_string = "; ".join(sorted(context_tokens))
-        updates.append((qid, context_string))
-
-    return store.update_context_strings(updates)
 
 
 def run_pass2(
@@ -418,75 +593,22 @@ def run_pass2(
 ) -> int:
     if batch_size <= 0:
         raise ValueError("--context-batch-size must be > 0")
-    workers = max(1, worker_count or min(8, (os.cpu_count() or 1)))
     store = PostgresStore(postgres_dsn)
     store.ensure_schema()
-
     total_entities = store.count_entities()
-    updated_total = 0
-    in_flight: set[Future[int]] = set()
-    submitted = 0
-
-    def _drain_ready(*, block: bool) -> None:
-        nonlocal updated_total
-        if not in_flight:
-            return
-        if block:
-            done, pending = wait(in_flight, return_when=FIRST_COMPLETED)
-        else:
-            done = {future for future in in_flight if future.done()}
-            pending = in_flight - done
-            if not done:
-                return
-        in_flight.clear()
-        in_flight.update(pending)
-        for future in done:
-            updated_total += future.result()
-
-    with tqdm(total=total_entities or None, desc="pg-pass2", unit="entity") as progress:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            for qids in store.iter_entity_ids(batch_size=batch_size):
-                submitted += len(qids)
-                in_flight.add(executor.submit(_build_context_string_for_qids, postgres_dsn, qids))
-                if len(in_flight) >= max(1, workers * 2):
-                    before = updated_total
-                    _drain_ready(block=True)
-                    delta = max(0, updated_total - before)
-                    if delta:
-                        progress.update(delta)
-                        keep_tqdm_total_ahead(progress)
-                        progress.set_postfix(updated=updated_total, queued=len(in_flight))
-                else:
-                    _drain_ready(block=False)
-                    if updated_total > progress.n:
-                        delta = int(updated_total - progress.n)
-                        progress.update(delta)
-                        keep_tqdm_total_ahead(progress)
-
-            while in_flight:
-                before = updated_total
-                _drain_ready(block=True)
-                delta = max(0, updated_total - before)
-                if delta:
-                    progress.update(delta)
-                    keep_tqdm_total_ahead(progress)
-                    progress.set_postfix(updated=updated_total, queued=len(in_flight))
-        finalize_tqdm_total(progress)
-
     print(
-        "Completed Postgres pass2:",
+        "Skipped Postgres pass2:",
         f"entities={total_entities}",
-        f"updated={updated_total}",
-        f"workers={workers}",
+        "reason=context_string is built lazily from entity_triples",
         f"batch_size={batch_size}",
-        f"submitted={submitted}",
+        f"workers={max(1, worker_count or min(8, (os.cpu_count() or 1)))}",
     )
     return 0
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Two-pass Postgres ingestion for deterministic entity lookup."
+        description="Postgres ingestion for deterministic entity lookup (pass2 is a compatibility no-op)."
     )
     parser.add_argument("--dump-path", help=f"Input dump path. Overrides ${DUMP_PATH_ENV}.")
     parser.add_argument("--postgres-dsn", help="Postgres DSN.")
@@ -494,10 +616,15 @@ def parse_args() -> argparse.Namespace:
         "--mode",
         choices=("pass1", "pass2", "all"),
         default="all",
-        help="Which ingestion phase(s) to run.",
+        help="Which ingestion phase(s) to run (pass2 is kept only for compatibility).",
     )
     parser.add_argument("--batch-size", type=parse_positive_int, default=5000)
-    parser.add_argument("--context-batch-size", type=parse_positive_int, default=1000)
+    parser.add_argument(
+        "--context-batch-size",
+        type=parse_positive_int,
+        default=1000,
+        help="Deprecated compatibility option; pass2 no longer materializes context strings.",
+    )
     parser.add_argument("--limit", type=parse_non_negative_int, default=0)
     parser.add_argument(
         "--expected-entity-total",
@@ -512,13 +639,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--languages",
         default="en",
-        help="Comma-separated language allowlist for labels/descriptions.",
+        help="Comma-separated language allowlist used for lexical typing inputs.",
     )
-    parser.add_argument("--max-aliases-per-language", type=parse_non_negative_int, default=8)
     parser.add_argument(
-        "--max-context-object-ids",
+        "--max-aliases-per-language",
         type=parse_non_negative_int,
-        default=DEFAULT_MAX_CONTEXT_OBJECT_IDS,
+        default=8,
+        help="Max aliases per language considered for lexical typing (stored aliases remain multilingual).",
     )
     parser.add_argument("--disable-ner-classifier", action="store_true")
     return parser.parse_args()
@@ -538,7 +665,6 @@ def main() -> int:
                 limit=args.limit,
                 language_allowlist=language_allowlist,
                 max_aliases_per_language=args.max_aliases_per_language,
-                max_context_object_ids=args.max_context_object_ids,
                 disable_ner_classifier=args.disable_ner_classifier,
                 worker_count=args.workers,
                 expected_entity_total=(args.expected_entity_total or None),

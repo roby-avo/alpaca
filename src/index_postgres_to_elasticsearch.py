@@ -13,7 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .common import resolve_configured_str, resolve_postgres_dsn, tqdm
-
+from .postgres_store import PostgresStore
 try:  # pragma: no cover - import depends on runtime environment
     import psycopg  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover
@@ -334,6 +334,15 @@ def _build_index_payload() -> dict[str, Any]:
                         }
                     },
                 },
+                "labels": {
+                    "type": "text",
+                    "analyzer": "alpaca_text",
+                    "copy_to": ["search_text"],
+                },
+                "description": {
+                    "type": "text",
+                    "analyzer": "alpaca_text",
+                },
                 "aliases": {
                     "type": "text",
                     "analyzer": "alpaca_text",
@@ -359,6 +368,10 @@ def _build_index_payload() -> dict[str, Any]:
                 "item_category": {
                     "type": "keyword",
                     "normalizer": "alpaca_keyword_lower",
+                },
+                "types": {
+                    "type": "keyword",
+                    "ignore_above": 256,
                 },
                 "popularity": {"type": "float"},
                 "prior": {"type": "float"},
@@ -489,7 +502,7 @@ def _finalize_index(
     )
 
 
-def _clean_aliases(raw: Any) -> list[str]:
+def _clean_terms(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
     out: list[str] = []
@@ -520,28 +533,35 @@ def _as_iso_datetime(raw: Any) -> str:
 
 
 def _row_to_document(row: Sequence[Any]) -> dict[str, Any] | None:
-    if len(row) < 12:
+    if len(row) < 14:
         return None
     qid = row[0]
     label = row[1]
     if not isinstance(qid, str) or not isinstance(label, str):
         return None
+    labels = _clean_terms(row[2])
+    aliases = _clean_terms(row[3])
 
     doc: dict[str, Any] = {
         "qid": qid,
         "label": label,
-        "context_string": row[2] if isinstance(row[2], str) else "",
-        "aliases": _clean_aliases(row[3]),
-        "coarse_type": row[4] if isinstance(row[4], str) else "",
-        "fine_type": row[5] if isinstance(row[5], str) else "",
-        "item_category": row[6] if isinstance(row[6], str) else "",
-        "popularity": _as_float(row[7]),
-        "prior": _as_float(row[8]),
+        "labels": labels,
+        "aliases": aliases,
+        "types": _clean_terms(row[5]),
+        "context_string": "",
+        "coarse_type": row[6] if isinstance(row[6], str) else "",
+        "fine_type": row[7] if isinstance(row[7], str) else "",
+        "item_category": row[8] if isinstance(row[8], str) else "",
+        "popularity": _as_float(row[9]),
+        "prior": _as_float(row[10]),
         # Keep compact refs from Postgres to save space.
-        "wikipedia_url": row[9] if isinstance(row[9], str) else "",
-        "dbpedia_url": row[10] if isinstance(row[10], str) else "",
+        "wikipedia_url": row[11] if isinstance(row[11], str) else "",
+        "dbpedia_url": row[12] if isinstance(row[12], str) else "",
     }
-    updated_at = _as_iso_datetime(row[11])
+    description = row[4] if isinstance(row[4], str) else ""
+    if description:
+        doc["description"] = description
+    updated_at = _as_iso_datetime(row[13])
     if updated_at:
         doc["updated_at"] = updated_at
     return doc
@@ -556,20 +576,34 @@ def _iter_documents_from_postgres(
 ) -> Iterator[list[dict[str, Any]]]:
     pg = _require_psycopg()
     table_sql = _quote_table_name(table_name)
+    context_store = PostgresStore(postgres_dsn)
+    table_name_tail = table_name.strip().split(".")[-1]
+    source_alias = "src"
     where_sql = ""
     params: list[Any] = []
     if updated_since:
-        where_sql = "WHERE updated_at >= %s::timestamptz"
+        where_sql = f"WHERE {source_alias}.updated_at >= %s::timestamptz"
         params.append(updated_since)
 
     sql = f"""
     SELECT
-        qid, label, context_string, aliases,
-        coarse_type, fine_type, item_category,
-        popularity, prior, wikipedia_url, dbpedia_url, updated_at
-    FROM {table_sql}
+        {source_alias}.qid,
+        {source_alias}.label,
+        {source_alias}.labels,
+        {source_alias}.aliases,
+        {source_alias}.description,
+        {source_alias}.types,
+        {source_alias}.coarse_type,
+        {source_alias}.fine_type,
+        {source_alias}.item_category,
+        {source_alias}.popularity,
+        {source_alias}.prior,
+        {source_alias}.wikipedia_url,
+        {source_alias}.dbpedia_url,
+        {source_alias}.updated_at
+    FROM {table_sql} AS {source_alias}
     {where_sql}
-    ORDER BY qid
+    ORDER BY {source_alias}.qid
     """
     with pg.connect(postgres_dsn) as conn:
         # Named cursor streams rows from server to avoid loading the whole table.
@@ -586,7 +620,13 @@ def _iter_documents_from_postgres(
                     if doc:
                         docs.append(doc)
                 if docs:
-                    yield docs
+                    if table_name_tail == "entities":
+                        yield context_store.attach_context_strings(
+                            docs,
+                            chunk_size=min(2000, max(1, batch_size)),
+                        )
+                    else:
+                        yield docs
 
 
 def _count_source_rows(

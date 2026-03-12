@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -27,18 +28,51 @@ class EntityRecord:
     label: str
     labels: Mapping[str, str]
     aliases: Mapping[str, Sequence[str]]
-    relation_object_qids: Sequence[str]
+    description: str | None
+    types: Sequence[str]
     item_category: str
     coarse_type: str
     fine_type: str
     popularity: float
     cross_refs: Mapping[str, Any]
-    context_string: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class EntityTripleRecord:
+    subject_qid: str
+    predicate_pid: str
+    object_qid: str
 
 
 _SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WIKIPEDIA_PREFIX = "https://en.wikipedia.org/wiki/"
 _DBPEDIA_PREFIX = "https://dbpedia.org/resource/"
+_WIKIPEDIA_DEFAULT_HOST = "en.wikipedia.org"
+_DBPEDIA_DEFAULT_HOST = "dbpedia.org"
+_HOSTED_REF_SEPARATOR = "|"
+_PRIMARY_LABEL_LANGUAGE_PREFERENCE = ("en", "mul")
+_EMPTY_ENTITY_NAME_PAYLOAD = '{"aliases":[],"labels":[]}'
+_EMPTY_ENTITY_NAME_PAYLOAD_BYTES = zlib.compress(_EMPTY_ENTITY_NAME_PAYLOAD.encode("utf-8"), level=9)
+_EMPTY_ENTITY_NAME_PAYLOAD_HEX = _EMPTY_ENTITY_NAME_PAYLOAD_BYTES.hex()
+MAX_STORED_LABELS = 64
+MAX_STORED_ALIASES = 128
+DEFAULT_INDEX_PROFILE = "lean"
+VALID_INDEX_PROFILES = frozenset({"lean", "full"})
+DEFAULT_MAX_CONTEXT_CHARS = 512
+
+
+def entity_name_payload_table_name(base_table_name: str) -> str:
+    stripped = base_table_name.strip()
+    if not stripped:
+        raise ValueError("Base table name must be non-empty.")
+    return f"{stripped}_name_payloads"
+
+
+def entity_context_inputs_table_name(base_table_name: str) -> str:
+    stripped = base_table_name.strip()
+    if not stripped:
+        raise ValueError("Base table name must be non-empty.")
+    return f"{stripped}_context_inputs"
 
 
 def _quote_identifier(name: str) -> str:
@@ -65,8 +99,14 @@ def _compact_wikipedia_ref(value: str) -> str:
     if raw.startswith("http://") or raw.startswith("https://"):
         parsed = urlsplit(raw)
         marker = "/wiki/"
-        if parsed.path and marker in parsed.path:
-            return parsed.path.split(marker, 1)[1]
+        if parsed.netloc and parsed.path and marker in parsed.path:
+            title = parsed.path.split(marker, 1)[1]
+            host = parsed.netloc.strip().lower()
+            if not host:
+                return title
+            if host == _WIKIPEDIA_DEFAULT_HOST:
+                return title
+            return f"{host}{_HOSTED_REF_SEPARATOR}{title}"
     return raw
 
 
@@ -79,8 +119,14 @@ def _compact_dbpedia_ref(value: str) -> str:
     if raw.startswith("http://") or raw.startswith("https://"):
         parsed = urlsplit(raw)
         marker = "/resource/"
-        if parsed.path and marker in parsed.path:
-            return parsed.path.split(marker, 1)[1]
+        if parsed.netloc and parsed.path and marker in parsed.path:
+            title = parsed.path.split(marker, 1)[1]
+            host = parsed.netloc.strip().lower()
+            if not host:
+                return title
+            if host == _DBPEDIA_DEFAULT_HOST:
+                return title
+            return f"{host}{_HOSTED_REF_SEPARATOR}{title}"
     return raw
 
 
@@ -103,6 +149,12 @@ def _expand_wikipedia_ref(value: str) -> str:
         return ""
     if raw.startswith("http://") or raw.startswith("https://"):
         return raw
+    if _HOSTED_REF_SEPARATOR in raw:
+        host, title = raw.split(_HOSTED_REF_SEPARATOR, 1)
+        host = host.strip()
+        title = title.strip()
+        if host and title:
+            return f"https://{host}/wiki/{title}"
     if raw.startswith("/wiki/"):
         return f"https://en.wikipedia.org{raw}"
     return f"{_WIKIPEDIA_PREFIX}{raw}"
@@ -114,6 +166,12 @@ def _expand_dbpedia_ref(value: str) -> str:
         return ""
     if raw.startswith("http://") or raw.startswith("https://"):
         return raw
+    if _HOSTED_REF_SEPARATOR in raw:
+        host, title = raw.split(_HOSTED_REF_SEPARATOR, 1)
+        host = host.strip()
+        title = title.strip()
+        if host and title:
+            return f"https://{host}/resource/{title}"
     if raw.startswith("/resource/"):
         return f"https://dbpedia.org{raw}"
     return f"{_DBPEDIA_PREFIX}{raw}"
@@ -126,6 +184,20 @@ def _require_psycopg() -> Any:
             "to use the Postgres entity/cache backend."
         )
     return psycopg
+
+
+def _ordered_language_keys(values: Mapping[str, Any]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for language in _PRIMARY_LABEL_LANGUAGE_PREFERENCE:
+        if language in values and language not in seen:
+            seen.add(language)
+            ordered.append(language)
+    for language in sorted(values):
+        if language in seen:
+            continue
+        ordered.append(language)
+    return ordered
 
 
 def _as_text_map(raw: Any) -> dict[str, str]:
@@ -196,7 +268,7 @@ def _extract_sample_entity_label(raw_entity_json: Any) -> str | None:
     if not isinstance(raw_labels, Mapping):
         return None
 
-    preferred: list[tuple[str, str]] = []
+    preferred: dict[str, str] = {}
     for language, payload in raw_labels.items():
         if not isinstance(language, str) or not isinstance(payload, Mapping):
             continue
@@ -206,14 +278,13 @@ def _extract_sample_entity_label(raw_entity_json: Any) -> str | None:
         normalized = normalize_text(raw_value)
         if not normalized:
             continue
-        if language == "en":
-            return normalized
-        preferred.append((language, normalized))
+        preferred[language] = normalized
 
-    if not preferred:
-        return None
-    preferred.sort(key=lambda item: item[0])
-    return preferred[0][1]
+    for language in _ordered_language_keys(preferred):
+        value = preferred.get(language)
+        if value:
+            return value
+    return None
 
 
 def _popularity_to_prior_local(popularity: float) -> float:
@@ -224,11 +295,7 @@ def _popularity_to_prior_local(popularity: float) -> float:
 def _flatten_labels_map(labels: Mapping[str, str]) -> list[str]:
     flattened: list[str] = []
     seen: set[str] = set()
-    if "en" in labels:
-        ordered_langs = ["en", *sorted(lang for lang in labels if lang != "en")]
-    else:
-        ordered_langs = sorted(labels)
-    for language in ordered_langs:
+    for language in _ordered_language_keys(labels):
         raw_value = labels.get(language)
         if not isinstance(raw_value, str):
             continue
@@ -240,20 +307,21 @@ def _flatten_labels_map(labels: Mapping[str, str]) -> list[str]:
     return flattened
 
 
-def _flatten_aliases_map(aliases: Mapping[str, Sequence[str]]) -> list[str]:
+def _flatten_aliases_map(
+    aliases: Mapping[str, Sequence[str]],
+    *,
+    excluded: set[str] | None = None,
+) -> list[str]:
     flattened: list[str] = []
     seen: set[str] = set()
-    if "en" in aliases:
-        ordered_langs = ["en", *sorted(lang for lang in aliases if lang != "en")]
-    else:
-        ordered_langs = sorted(aliases)
-    for language in ordered_langs:
+    blocked = excluded if excluded is not None else set()
+    for language in _ordered_language_keys(aliases):
         values = aliases.get(language, [])
         for raw_alias in values:
             if not isinstance(raw_alias, str):
                 continue
             alias = normalize_text(raw_alias)
-            if not alias or alias in seen:
+            if not alias or alias in seen or alias in blocked:
                 continue
             seen.add(alias)
             flattened.append(alias)
@@ -264,30 +332,194 @@ def _join_terms(values: Sequence[str]) -> str:
     return " ".join(value for value in values if isinstance(value, str) and value)
 
 
+def _limit_terms(values: Sequence[str], *, max_terms: int) -> list[str]:
+    if max_terms <= 0:
+        return []
+    return [value for index, value in enumerate(values) if index < max_terms]
+
+
+def _normalize_name_terms(
+    values: Sequence[str],
+    *,
+    excluded: set[str] | None = None,
+) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    blocked = excluded if excluded is not None else set()
+    for raw_value in values:
+        if not isinstance(raw_value, str):
+            continue
+        value = normalize_text(raw_value)
+        if not value or value in seen or value in blocked:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _build_entity_name_sets(
+    *,
+    labels: Mapping[str, str],
+    aliases: Mapping[str, Sequence[str]],
+) -> tuple[list[str], list[str]]:
+    labels_flat = _flatten_labels_map(labels)
+    aliases_flat = _flatten_aliases_map(aliases, excluded=set(labels_flat))
+    return labels_flat, aliases_flat
+
+
+def _build_search_texts_from_name_sets(
+    *,
+    label: str,
+    labels: Sequence[str],
+    aliases: Sequence[str],
+) -> tuple[str, str]:
+    primary_label_normalized = normalize_text(label) if isinstance(label, str) else ""
+    secondary_labels = [
+        value
+        for value in _normalize_name_terms(labels)
+        if value and (not primary_label_normalized or value != primary_label_normalized)
+    ]
+    aliases_flat = _normalize_name_terms(aliases, excluded=set(_normalize_name_terms(labels)))
+    return _join_terms(secondary_labels), _join_terms(aliases_flat)
+
+
+def _legacy_label_values(label: Any, raw_labels: Any) -> list[str]:
+    labels = _normalize_name_terms(_as_str_list(raw_labels))
+    primary_label = normalize_text(label) if isinstance(label, str) else ""
+    if not primary_label:
+        return labels
+    if primary_label in labels:
+        return [primary_label, *[value for value in labels if value != primary_label]]
+    return [primary_label, *labels]
+
+
+def _encode_entity_name_payload(
+    *,
+    labels: Sequence[str],
+    aliases: Sequence[str],
+) -> bytes:
+    normalized_labels = _normalize_name_terms(labels)
+    normalized_aliases = _normalize_name_terms(aliases, excluded=set(normalized_labels))
+    if not normalized_labels and not normalized_aliases:
+        return _EMPTY_ENTITY_NAME_PAYLOAD_BYTES
+    payload = _json_compact(
+        {
+            "labels": normalized_labels,
+            "aliases": normalized_aliases,
+        }
+    )
+    return zlib.compress(payload.encode("utf-8"), level=9)
+
+
+def _decode_entity_document_payload(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, memoryview):
+        raw = raw.tobytes()
+    if isinstance(raw, bytearray):
+        raw = bytes(raw)
+    if isinstance(raw, bytes):
+        if not raw:
+            return [], []
+        try:
+            raw = zlib.decompress(raw).decode("utf-8")
+        except zlib.error:
+            try:
+                raw = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return {
+                    "labels": [],
+                    "aliases": [],
+                    "description": None,
+                    "types": [],
+                    "coarse_type": "",
+                    "fine_type": "",
+                    "item_category": "",
+                    "popularity": 0.0,
+                    "prior": 0.0,
+                    "wikipedia_url": "",
+                    "dbpedia_url": "",
+                }
+    payload = _as_json_object(raw)
+    labels = _normalize_name_terms(_as_str_list(payload.get("labels")))
+    aliases = _normalize_name_terms(_as_str_list(payload.get("aliases")), excluded=set(labels))
+    description = payload.get("description")
+    raw_types = payload.get("types")
+    types = [value for value in _as_str_list(raw_types) if value]
+    coarse_type = payload.get("coarse_type") if isinstance(payload.get("coarse_type"), str) else ""
+    fine_type = payload.get("fine_type") if isinstance(payload.get("fine_type"), str) else ""
+    item_category = payload.get("item_category") if isinstance(payload.get("item_category"), str) else ""
+    popularity = payload.get("popularity")
+    prior = payload.get("prior")
+    wikipedia_url = payload.get("wikipedia_url") if isinstance(payload.get("wikipedia_url"), str) else ""
+    dbpedia_url = payload.get("dbpedia_url") if isinstance(payload.get("dbpedia_url"), str) else ""
+    return {
+        "labels": labels,
+        "aliases": aliases,
+        "description": description if isinstance(description, str) else None,
+        "types": types,
+        "coarse_type": coarse_type,
+        "fine_type": fine_type,
+        "item_category": item_category,
+        "popularity": float(popularity) if isinstance(popularity, (int, float)) else 0.0,
+        "prior": float(prior) if isinstance(prior, (int, float)) else 0.0,
+        "wikipedia_url": wikipedia_url,
+        "dbpedia_url": dbpedia_url,
+    }
+
+
+def _decode_entity_name_payload(raw: Any) -> tuple[list[str], list[str]]:
+    payload = _decode_entity_document_payload(raw)
+    labels = payload.get("labels")
+    aliases = payload.get("aliases")
+    return (
+        [value for value in labels if isinstance(value, str)] if isinstance(labels, list) else [],
+        [value for value in aliases if isinstance(value, str)] if isinstance(aliases, list) else [],
+    )
+
+
+def _encode_entity_document_payload(
+    *,
+    labels: Sequence[str],
+    aliases: Sequence[str],
+    description: str | None,
+    types: Sequence[str],
+    coarse_type: str,
+    fine_type: str,
+    item_category: str,
+    popularity: float,
+    prior: float,
+    wikipedia_url: str,
+    dbpedia_url: str,
+) -> bytes:
+    normalized_labels = _normalize_name_terms(labels)
+    normalized_aliases = _normalize_name_terms(aliases, excluded=set(normalized_labels))
+    payload: dict[str, Any] = {
+        "labels": normalized_labels,
+        "aliases": normalized_aliases,
+        "types": [value for value in types if isinstance(value, str) and value],
+        "coarse_type": coarse_type if isinstance(coarse_type, str) else "",
+        "fine_type": fine_type if isinstance(fine_type, str) else "",
+        "item_category": item_category if isinstance(item_category, str) else "",
+        "popularity": float(popularity),
+        "prior": float(prior),
+        "wikipedia_url": wikipedia_url if isinstance(wikipedia_url, str) else "",
+        "dbpedia_url": dbpedia_url if isinstance(dbpedia_url, str) else "",
+    }
+    if isinstance(description, str) and description:
+        payload["description"] = description
+    return zlib.compress(_json_compact(payload).encode("utf-8"), level=9)
+
+
 def _entity_search_columns(
     *,
     label: str,
     labels: Mapping[str, str],
     aliases: Mapping[str, Sequence[str]],
-    context_string: str,
     cross_refs: Mapping[str, Any],
     popularity: float,
 ) -> dict[str, Any]:
-    labels_flat_all = _flatten_labels_map(labels)
-    primary_label_normalized = normalize_text(label) if isinstance(label, str) else ""
-    labels_flat = [
-        value
-        for value in labels_flat_all
-        if value and (not primary_label_normalized or value != primary_label_normalized)
-    ]
-    aliases_flat = _flatten_aliases_map(aliases)
-    # Keep secondary labels + aliases together for lookup matching/reranking without
-    # duplicating the primary label. This is the normalized lookup-facing name payload.
-    lookup_aliases = [*labels_flat, *aliases_flat]
-    aliases_text = _join_terms(lookup_aliases)
-    clean_context = normalize_text(context_string) if context_string else ""
-    # Keep the indexed context compact to reduce tsvector noise/size.
-    context_search_text = clean_context[:256]
+    labels_flat_all, aliases_flat_all = _build_entity_name_sets(labels=labels, aliases=aliases)
+    labels_flat = _limit_terms(labels_flat_all, max_terms=MAX_STORED_LABELS)
+    aliases_flat = _limit_terms(aliases_flat_all, max_terms=MAX_STORED_ALIASES)
     wikipedia_url = ""
     raw_wikipedia = cross_refs.get("wikipedia")
     if isinstance(raw_wikipedia, str):
@@ -298,12 +530,39 @@ def _entity_search_columns(
         dbpedia_url = _compact_dbpedia_ref(raw_dbpedia)
     return {
         "prior": _popularity_to_prior_local(popularity),
-        "aliases": lookup_aliases,
-        "aliases_text": aliases_text,
-        "context_search_text": context_search_text,
+        "labels": labels_flat,
+        "aliases": aliases_flat,
         "wikipedia_url": wikipedia_url,
         "dbpedia_url": dbpedia_url,
     }
+
+
+def build_entity_context_string(
+    *,
+    related_labels: Sequence[str],
+    max_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+) -> str:
+    if max_chars <= 0:
+        return ""
+    values: list[str] = []
+    seen: set[str] = set()
+    current_len = 0
+    for raw_value in related_labels:
+        if not isinstance(raw_value, str):
+            continue
+        value = raw_value.strip()
+        if not value or value in seen:
+            continue
+        extra = len(value) if not values else len(value) + 2
+        if values and current_len + extra > max_chars:
+            break
+        if not values and len(value) > max_chars:
+            values.append(value[:max_chars])
+            break
+        seen.add(value)
+        values.append(value)
+        current_len += extra
+    return "; ".join(values)
 
 
 class PostgresStore:
@@ -319,82 +578,118 @@ class PostgresStore:
         except Exception as exc:  # pragma: no cover - connection issues are environment-specific
             raise PostgresStoreError(f"Could not connect to Postgres: {exc}") from exc
 
+    def _table_exists(self, conn: Any, table_name: str) -> bool:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass(%s)", (table_name,))
+            row = cur.fetchone()
+        return bool(row and row[0])
+
+    def _column_data_type(self, conn: Any, *, table_name: str, column_name: str) -> str:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT data_type
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = %s
+                  AND column_name = %s
+                """,
+                (table_name, column_name),
+            )
+            row = cur.fetchone()
+        return row[0] if row and isinstance(row[0], str) else ""
+
+    def _update_entity_name_rows(
+        self,
+        conn: Any,
+        rows: Sequence[tuple[str, list[str], list[str]]],
+    ) -> None:
+        if not rows:
+            return
+        sql = """
+        UPDATE entities
+        SET labels = %s::text[],
+            aliases = %s::text[],
+            updated_at = NOW()
+        WHERE qid = %s
+          AND COALESCE(array_length(labels, 1), 0) = 0
+          AND COALESCE(array_length(aliases, 1), 0) = 0
+        """
+        with conn.cursor() as cur:
+            cur.executemany(sql, [(labels, aliases, qid) for qid, labels, aliases in rows])
+
+    def _migrate_legacy_entity_names_to_entities(
+        self,
+        conn: Any,
+        *,
+        entity_columns: set[str],
+    ) -> None:
+        aliases_column = "aliases" if "aliases" in entity_columns else ""
+        if not aliases_column and "name_variants" in entity_columns:
+            aliases_column = "name_variants"
+
+        legacy_labels_column = "legacy_labels" if "legacy_labels" in entity_columns else ""
+        if not legacy_labels_column and "labels_json" in entity_columns:
+            legacy_labels_column = "labels_json"
+        payload_type = self._column_data_type(conn, table_name="entities", column_name="name_payload")
+
+        select_columns = [
+            "qid",
+            "label",
+            "labels" if "labels" in entity_columns else "ARRAY[]::text[] AS labels",
+            "aliases" if "aliases" in entity_columns else "ARRAY[]::text[] AS aliases",
+            legacy_labels_column if legacy_labels_column else "NULL::text[] AS legacy_labels",
+            aliases_column if aliases_column else "NULL::text[] AS legacy_aliases",
+            "name_payload" if payload_type else "NULL AS name_payload",
+        ]
+        read_cur = conn.cursor(name="alpaca_entities_legacy_name_migration")
+        read_cur.itersize = 10_000
+        read_cur.execute(f"SELECT {', '.join(select_columns)} FROM entities ORDER BY qid")
+        try:
+            while True:
+                rows = read_cur.fetchmany(10_000)
+                if not rows:
+                    break
+                name_rows: list[tuple[str, list[str], list[str]]] = []
+                for qid, label, stored_labels, stored_aliases, raw_labels, raw_aliases, raw_payload in rows:
+                    if not isinstance(qid, str):
+                        continue
+                    normalized_stored_labels = _normalize_name_terms(_as_str_list(stored_labels))
+                    normalized_stored_aliases = _normalize_name_terms(
+                        _as_str_list(stored_aliases),
+                        excluded=set(normalized_stored_labels),
+                    )
+                    if normalized_stored_labels or normalized_stored_aliases:
+                        continue
+                    payload_labels: list[str] = []
+                    payload_aliases: list[str] = []
+                    if payload_type:
+                        payload_labels, payload_aliases = _decode_entity_name_payload(raw_payload)
+                    labels = payload_labels or _legacy_label_values(label, raw_labels)
+                    aliases = payload_aliases or _normalize_name_terms(
+                        _as_str_list(raw_aliases),
+                        excluded=set(labels),
+                    )
+                    name_rows.append(
+                        (
+                            qid,
+                            _limit_terms(labels, max_terms=MAX_STORED_LABELS),
+                            _limit_terms(aliases, max_terms=MAX_STORED_ALIASES),
+                        )
+                    )
+                self._update_entity_name_rows(conn, name_rows)
+        finally:
+            read_cur.close()
+
     def ensure_schema(self) -> None:
         ddl = """
-        CREATE OR REPLACE FUNCTION alpaca_join_text_array(arr TEXT[])
-        RETURNS TEXT
-        LANGUAGE SQL
-        IMMUTABLE
-        PARALLEL SAFE
-        RETURNS NULL ON NULL INPUT
-        AS $$
-            SELECT array_to_string(arr, ' ');
-        $$;
-
-        CREATE OR REPLACE FUNCTION alpaca_filter_fts_text(txt TEXT)
-        RETURNS TEXT
-        LANGUAGE SQL
-        IMMUTABLE
-        PARALLEL SAFE
-        RETURNS NULL ON NULL INPUT
-        AS $$
-            SELECT COALESCE(string_agg(tok, ' ' ORDER BY ord), '')
-            FROM (
-                SELECT m.match_arr[1] AS tok, m.ord
-                FROM regexp_matches(lower(txt), '[[:alnum:]]+', 'g')
-                     WITH ORDINALITY AS m(match_arr, ord)
-            ) AS parts
-            WHERE char_length(tok) >= 2
-              AND tok <> ALL(ARRAY[
-                    'a','an','the','and','or','but',
-                    'of','in','on','at','to','for','from','by','with','without',
-                    'into','onto','over','under','after','before','during',
-                    'between','among','via','per',
-                    'is','are','was','were','be','been','being',
-                    'this','that','these','those'
-                ]::text[]);
-        $$;
-
-        CREATE OR REPLACE FUNCTION alpaca_filter_fts_context(txt TEXT)
-        RETURNS TEXT
-        LANGUAGE SQL
-        IMMUTABLE
-        PARALLEL SAFE
-        RETURNS NULL ON NULL INPUT
-        AS $$
-            SELECT COALESCE(string_agg(tok, ' ' ORDER BY first_ord), '')
-            FROM (
-                SELECT tok, MIN(ord) AS first_ord
-                FROM (
-                    SELECT m.match_arr[1] AS tok, m.ord
-                    FROM regexp_matches(lower(txt), '[[:alnum:]]+', 'g')
-                         WITH ORDINALITY AS m(match_arr, ord)
-                ) AS parts
-                WHERE char_length(tok) >= 3
-                  AND tok !~ '^[0-9]+$'
-                  AND tok <> ALL(ARRAY[
-                        'a','an','the','and','or','but',
-                        'of','in','on','at','to','for','from','by','with','without',
-                        'into','onto','over','under','after','before','during',
-                        'between','among','via','per',
-                        'is','are','was','were','be','been','being',
-                        'this','that','these','those',
-                        'monday','tuesday','wednesday','thursday','friday','saturday','sunday',
-                        'january','february','march','april','may','june',
-                        'july','august','september','october','november','december'
-                    ]::text[])
-                GROUP BY tok
-                ORDER BY MIN(ord)
-                LIMIT 64
-            ) AS filtered;
-        $$;
-
         CREATE TABLE IF NOT EXISTS entities (
             qid TEXT PRIMARY KEY,
             label TEXT NOT NULL,
-            context_string TEXT NOT NULL DEFAULT '',
+            labels TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
             aliases TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
-            search_vector TSVECTOR NOT NULL DEFAULT ''::tsvector,
+            description TEXT,
+            types TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
             coarse_type TEXT NOT NULL DEFAULT '',
             fine_type TEXT NOT NULL DEFAULT '',
             item_category TEXT NOT NULL DEFAULT '',
@@ -404,13 +699,13 @@ class PostgresStore:
             dbpedia_url TEXT NOT NULL DEFAULT '',
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
-        CREATE INDEX IF NOT EXISTS idx_entities_coarse_type ON entities (coarse_type);
-        CREATE INDEX IF NOT EXISTS idx_entities_fine_type ON entities (fine_type);
 
-        CREATE TABLE IF NOT EXISTS entity_context_inputs (
-            qid TEXT PRIMARY KEY,
-            relation_object_qids JSONB NOT NULL DEFAULT '[]'::jsonb,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        CREATE TABLE IF NOT EXISTS entity_triples (
+            subject_qid TEXT NOT NULL,
+            predicate_pid TEXT NOT NULL,
+            object_qid TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (subject_qid, predicate_pid, object_qid)
         );
 
         CREATE TABLE IF NOT EXISTS query_cache (
@@ -427,14 +722,18 @@ class PostgresStore:
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
+        ALTER TABLE entities ADD COLUMN IF NOT EXISTS description TEXT;
+        ALTER TABLE entities ADD COLUMN IF NOT EXISTS labels TEXT[] NOT NULL DEFAULT ARRAY[]::text[];
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS aliases TEXT[] NOT NULL DEFAULT ARRAY[]::text[];
-        ALTER TABLE entities ADD COLUMN IF NOT EXISTS search_vector TSVECTOR NOT NULL DEFAULT ''::tsvector;
+        ALTER TABLE entities ADD COLUMN IF NOT EXISTS types TEXT[] NOT NULL DEFAULT ARRAY[]::text[];
+        ALTER TABLE entities ADD COLUMN IF NOT EXISTS coarse_type TEXT NOT NULL DEFAULT '';
+        ALTER TABLE entities ADD COLUMN IF NOT EXISTS fine_type TEXT NOT NULL DEFAULT '';
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS item_category TEXT NOT NULL DEFAULT '';
+        ALTER TABLE entities ADD COLUMN IF NOT EXISTS popularity DOUBLE PRECISION NOT NULL DEFAULT 0;
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS prior DOUBLE PRECISION NOT NULL DEFAULT 0;
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS wikipedia_url TEXT NOT NULL DEFAULT '';
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS dbpedia_url TEXT NOT NULL DEFAULT '';
-        ALTER TABLE entity_context_inputs ADD COLUMN IF NOT EXISTS relation_object_qids JSONB NOT NULL DEFAULT '[]'::jsonb;
-        CREATE INDEX IF NOT EXISTS idx_entities_item_category ON entities (item_category);
+        ALTER TABLE entities DROP COLUMN IF EXISTS context_string;
         """
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -452,54 +751,70 @@ class PostgresStore:
                     for row in cur.fetchall()
                     if row and isinstance(row[0], str)
                 }
-                # Normalize into a single lookup-facing aliases array.
-                if "name_variants" in entity_columns:
-                    cur.execute(
-                        """
-                        UPDATE entities
-                        SET aliases = COALESCE(name_variants, ARRAY[]::text[])
-                        WHERE COALESCE(array_length(name_variants, 1), 0) > 0
-                          AND COALESCE(array_length(aliases, 1), 0) = 0
-                        """
-                    )
-                elif "labels" in entity_columns:
-                    cur.execute(
-                        """
-                        UPDATE entities
-                        SET aliases = COALESCE(labels, ARRAY[]::text[]) || COALESCE(aliases, ARRAY[]::text[])
-                        WHERE COALESCE(array_length(labels, 1), 0) > 0
-                        """
-                    )
-                if "labels" in entity_columns:
-                    cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS labels")
-                if "name_variants" in entity_columns:
-                    cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS name_variants")
+            self._migrate_legacy_entity_names_to_entities(conn, entity_columns=entity_columns)
+            with conn.cursor() as cur:
+                for index_name in (
+                    "idx_entities_search_vector",
+                    "idx_entities_label_trgm",
+                    "idx_entities_aliases_trgm",
+                    "idx_entities_aliases_text_trgm",
+                    "idx_entities_name_variants_trgm",
+                    "idx_entities_label_exact",
+                    "idx_entities_aliases_exact",
+                    "idx_entities_cross_refs_exact",
+                    "idx_entities_cross_refs_text_trgm",
+                    "idx_entities_cross_refs_url_trgm",
+                ):
+                    cur.execute(f"DROP INDEX IF EXISTS {_quote_identifier(index_name)}")
+                cur.execute("DROP FUNCTION IF EXISTS alpaca_join_text_array(TEXT[])")
+                cur.execute("DROP FUNCTION IF EXISTS alpaca_filter_fts_text(TEXT)")
+                cur.execute("DROP FUNCTION IF EXISTS alpaca_filter_fts_context(TEXT)")
+                cur.execute("DROP EXTENSION IF EXISTS pg_trgm CASCADE")
+                cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS name_variants")
+                cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS name_payload")
+                cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS relation_object_qids")
+                cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS search_vector")
+                cur.execute("DROP TABLE IF EXISTS entity_name_payloads")
+                cur.execute("DROP TABLE IF EXISTS entity_context_inputs")
             conn.commit()
 
-    def ensure_search_indexes(self, table_name: str = "entities") -> None:
+    def ensure_search_indexes(
+        self,
+        table_name: str = "entities",
+        *,
+        index_profile: str = DEFAULT_INDEX_PROFILE,
+    ) -> None:
         table_ident = _quote_identifier(table_name)
         index_prefix = f"idx_{table_name}"
-        aliases_expr = "COALESCE(alpaca_join_text_array(aliases), '')"
-        cross_ref_url_expr = "(COALESCE(wikipedia_url, '') || ' ' || COALESCE(dbpedia_url, ''))"
-        aliases_nonempty_pred = "COALESCE(array_length(aliases, 1), 0) > 0"
-        cross_refs_nonempty_pred = (
-            "(COALESCE(wikipedia_url, '') <> '' OR COALESCE(dbpedia_url, '') <> '')"
-        )
-        ddl = f"""
-        CREATE EXTENSION IF NOT EXISTS pg_trgm;
+        normalized_profile = normalize_text(index_profile).lower()
+        if normalized_profile not in VALID_INDEX_PROFILES:
+            raise ValueError(
+                f"Unsupported index profile '{index_profile}'. Expected one of: "
+                f"{', '.join(sorted(VALID_INDEX_PROFILES))}."
+            )
+        drop_parts = [
+            f"DROP INDEX IF EXISTS {_quote_identifier(f'{index_prefix}_item_category')};",
+        ]
+        if table_name == "entities":
+            drop_parts.extend(
+                [
+                    "DROP INDEX IF EXISTS idx_entity_triples_subject_qid;",
+                    "DROP INDEX IF EXISTS idx_entity_triples_object_qid;",
+                    "DROP INDEX IF EXISTS idx_entity_triples_predicate_pid;",
+                ]
+            )
 
+        ddl_parts = [f"""
         CREATE INDEX IF NOT EXISTS {index_prefix}_coarse_type ON {table_ident} (coarse_type);
         CREATE INDEX IF NOT EXISTS {index_prefix}_fine_type ON {table_ident} (fine_type);
-        CREATE INDEX IF NOT EXISTS {index_prefix}_item_category ON {table_ident} (item_category);
-        CREATE INDEX IF NOT EXISTS {index_prefix}_search_vector ON {table_ident} USING GIN (search_vector);
-        CREATE INDEX IF NOT EXISTS {index_prefix}_label_trgm ON {table_ident} USING GIN (label gin_trgm_ops);
-        CREATE INDEX IF NOT EXISTS {index_prefix}_aliases_trgm
-        ON {table_ident} USING GIN ({aliases_expr} gin_trgm_ops)
-        WHERE {aliases_nonempty_pred};
-        CREATE INDEX IF NOT EXISTS {index_prefix}_cross_refs_url_trgm
-        ON {table_ident} USING GIN ({cross_ref_url_expr} gin_trgm_ops)
-        WHERE {cross_refs_nonempty_pred};
-        """
+        CREATE INDEX IF NOT EXISTS {index_prefix}_label_lower ON {table_ident} (LOWER(label));
+        CREATE INDEX IF NOT EXISTS {index_prefix}_updated_at ON {table_ident} (updated_at);
+        CREATE INDEX IF NOT EXISTS {index_prefix}_wikipedia_url ON {table_ident} (wikipedia_url)
+        WHERE COALESCE(wikipedia_url, '') <> '';
+        CREATE INDEX IF NOT EXISTS {index_prefix}_dbpedia_url ON {table_ident} (dbpedia_url)
+        WHERE COALESCE(dbpedia_url, '') <> '';
+        """]
+        ddl = "\n".join([*drop_parts, *ddl_parts])
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
@@ -508,33 +823,23 @@ class PostgresStore:
     def upsert_entities(
         self,
         rows: Sequence[EntityRecord],
-        *,
-        build_search_vector: bool = True,
     ) -> int:
         if not rows:
             return 0
-        sql_with_search_vector = """
+        sql = """
         INSERT INTO entities (
-            qid, label, context_string,
-            aliases, search_vector,
-            coarse_type, fine_type, item_category, popularity, prior,
-            wikipedia_url, dbpedia_url
+            qid, label, labels, aliases, description, types, coarse_type, fine_type,
+            item_category, popularity, prior, wikipedia_url, dbpedia_url
         ) VALUES (
-            %s, %s, %s,
-            %s::text[],
-            (
-                setweight(to_tsvector('simple', alpaca_filter_fts_text(%s)), 'A') ||
-                setweight(to_tsvector('simple', alpaca_filter_fts_text(%s)), 'B') ||
-                setweight(to_tsvector('simple', alpaca_filter_fts_context(%s)), 'D')
-            ),
-            %s, %s, %s, %s, %s,
-            %s, %s
+            %s, %s, %s::text[], %s::text[], %s, %s::text[], %s, %s,
+            %s, %s, %s, %s, %s
         )
         ON CONFLICT (qid) DO UPDATE SET
             label = EXCLUDED.label,
-            context_string = EXCLUDED.context_string,
+            labels = EXCLUDED.labels,
             aliases = EXCLUDED.aliases,
-            search_vector = EXCLUDED.search_vector,
+            description = EXCLUDED.description,
+            types = EXCLUDED.types,
             coarse_type = EXCLUDED.coarse_type,
             fine_type = EXCLUDED.fine_type,
             item_category = EXCLUDED.item_category,
@@ -542,50 +847,14 @@ class PostgresStore:
             prior = EXCLUDED.prior,
             wikipedia_url = EXCLUDED.wikipedia_url,
             dbpedia_url = EXCLUDED.dbpedia_url,
-            updated_at = NOW()
-        """
-        sql_without_search_vector = """
-        INSERT INTO entities (
-            qid, label, context_string,
-            aliases, search_vector,
-            coarse_type, fine_type, item_category, popularity, prior,
-            wikipedia_url, dbpedia_url
-        ) VALUES (
-            %s, %s, %s,
-            %s::text[],
-            ''::tsvector,
-            %s, %s, %s, %s, %s,
-            %s, %s
-        )
-        ON CONFLICT (qid) DO UPDATE SET
-            label = EXCLUDED.label,
-            context_string = EXCLUDED.context_string,
-            aliases = EXCLUDED.aliases,
-            search_vector = EXCLUDED.search_vector,
-            coarse_type = EXCLUDED.coarse_type,
-            fine_type = EXCLUDED.fine_type,
-            item_category = EXCLUDED.item_category,
-            popularity = EXCLUDED.popularity,
-            prior = EXCLUDED.prior,
-            wikipedia_url = EXCLUDED.wikipedia_url,
-            dbpedia_url = EXCLUDED.dbpedia_url,
-            updated_at = NOW()
-        """
-        context_sql = """
-        INSERT INTO entity_context_inputs (qid, relation_object_qids, updated_at)
-        VALUES (%s, %s::jsonb, NOW())
-        ON CONFLICT (qid) DO UPDATE SET
-            relation_object_qids = EXCLUDED.relation_object_qids,
             updated_at = NOW()
         """
         payload: list[tuple[Any, ...]] = []
-        context_payload: list[tuple[Any, ...]] = []
         for row in rows:
             search_cols = _entity_search_columns(
                 label=row.label,
                 labels=row.labels,
                 aliases=row.aliases,
-                context_string=row.context_string,
                 cross_refs=row.cross_refs,
                 popularity=float(row.popularity),
             )
@@ -593,25 +862,10 @@ class PostgresStore:
                 (
                     row.qid,
                     row.label,
-                    row.context_string,
+                    list(search_cols["labels"]),
                     list(search_cols["aliases"]),
-                    normalize_text(row.label),
-                    str(search_cols["aliases_text"]),
-                    str(search_cols["context_search_text"]),
-                    row.coarse_type,
-                    row.fine_type,
-                    row.item_category,
-                    float(row.popularity),
-                    float(search_cols["prior"]),
-                    str(search_cols["wikipedia_url"]),
-                    str(search_cols["dbpedia_url"]),
-                )
-                if build_search_vector
-                else (
-                    row.qid,
-                    row.label,
-                    row.context_string,
-                    list(search_cols["aliases"]),
+                    row.description,
+                    list(row.types),
                     row.coarse_type,
                     row.fine_type,
                     row.item_category,
@@ -621,14 +875,65 @@ class PostgresStore:
                     str(search_cols["dbpedia_url"]),
                 )
             )
-            context_payload.append((row.qid, _json_compact(list(row.relation_object_qids))))
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.executemany(
-                    sql_with_search_vector if build_search_vector else sql_without_search_vector,
-                    payload,
+                cur.executemany(sql, payload)
+            conn.commit()
+        return len(payload)
+
+    def upsert_entity_triples(
+        self,
+        rows: Sequence[EntityTripleRecord],
+    ) -> int:
+        if not rows:
+            return 0
+        sql = """
+        INSERT INTO entity_triples (subject_qid, predicate_pid, object_qid, updated_at)
+        VALUES (%s, %s, %s, NOW())
+        ON CONFLICT (subject_qid, predicate_pid, object_qid) DO UPDATE SET
+            updated_at = NOW()
+        """
+        payload = [
+            (row.subject_qid, row.predicate_pid, row.object_qid)
+            for row in rows
+            if row.subject_qid and row.predicate_pid and row.object_qid
+        ]
+        if not payload:
+            return 0
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(sql, payload)
+            conn.commit()
+        return len(payload)
+
+    def replace_entity_triples(
+        self,
+        *,
+        subject_qids: Sequence[str],
+        rows: Sequence[EntityTripleRecord],
+    ) -> int:
+        normalized_subjects = [qid for qid in subject_qids if isinstance(qid, str) and qid]
+        if not normalized_subjects:
+            return 0
+        payload = [
+            (row.subject_qid, row.predicate_pid, row.object_qid)
+            for row in rows
+            if row.subject_qid and row.predicate_pid and row.object_qid
+        ]
+        insert_sql = """
+        INSERT INTO entity_triples (subject_qid, predicate_pid, object_qid, updated_at)
+        VALUES (%s, %s, %s, NOW())
+        ON CONFLICT (subject_qid, predicate_pid, object_qid) DO UPDATE SET
+            updated_at = NOW()
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM entity_triples WHERE subject_qid = ANY(%s)",
+                    (list(normalized_subjects),),
                 )
-                cur.executemany(context_sql, context_payload)
+                if payload:
+                    cur.executemany(insert_sql, payload)
             conn.commit()
         return len(payload)
 
@@ -651,9 +956,12 @@ class PostgresStore:
         if not qids:
             return []
         sql = """
-        SELECT qid, relation_object_qids
-        FROM entity_context_inputs
-        WHERE qid = ANY(%s)
+        SELECT
+            subject_qid,
+            array_agg(DISTINCT object_qid ORDER BY object_qid) AS object_qids
+        FROM entity_triples
+        WHERE subject_qid = ANY(%s)
+        GROUP BY subject_qid
         """
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -692,6 +1000,79 @@ class PostgresStore:
                     resolved[qid] = label
         return resolved
 
+    def build_context_strings(
+        self,
+        qids: Sequence[str],
+        *,
+        chunk_size: int = 1000,
+        max_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+    ) -> dict[str, str]:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+        normalized_qids: list[str] = []
+        seen: set[str] = set()
+        for qid in qids:
+            if not isinstance(qid, str):
+                continue
+            cleaned = qid.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            normalized_qids.append(cleaned)
+        if not normalized_qids:
+            return {}
+
+        context_map: dict[str, str] = {}
+        for start in range(0, len(normalized_qids), chunk_size):
+            chunk = normalized_qids[start : start + chunk_size]
+            batch = self.load_context_inputs(chunk)
+
+            related_ids: list[str] = []
+            related_seen: set[str] = set()
+            for _qid, object_qids in batch:
+                for object_qid in object_qids:
+                    if object_qid in related_seen:
+                        continue
+                    related_seen.add(object_qid)
+                    related_ids.append(object_qid)
+
+            label_map = self.resolve_labels(related_ids)
+            for qid, object_qids in batch:
+                related_labels = [
+                    label_map[object_qid].strip()
+                    for object_qid in object_qids
+                    if object_qid in label_map and label_map[object_qid].strip()
+                ]
+                context_map[qid] = build_entity_context_string(
+                    related_labels=related_labels,
+                    max_chars=max_chars,
+                )
+        return context_map
+
+    def attach_context_strings(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        chunk_size: int = 1000,
+        max_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+    ) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        hydrated = [dict(row) for row in rows]
+        context_map = self.build_context_strings(
+            [
+                row.get("qid")
+                for row in hydrated
+                if isinstance(row.get("qid"), str)
+            ],
+            chunk_size=chunk_size,
+            max_chars=max_chars,
+        )
+        for row in hydrated:
+            qid = row.get("qid")
+            row["context_string"] = context_map.get(qid, "") if isinstance(qid, str) else ""
+        return hydrated
+
     def resolve_sample_cache_labels(self, qids: Sequence[str]) -> dict[str, str]:
         if not qids:
             return {}
@@ -713,38 +1094,23 @@ class PostgresStore:
                 resolved[qid] = label
         return resolved
 
-    def update_context_strings(self, rows: Sequence[tuple[str, str]]) -> int:
-        if not rows:
-            return 0
+    def load_entity_name_sets(self, qids: Sequence[str]) -> dict[str, tuple[list[str], list[str]]]:
+        if not qids:
+            return {}
         sql = """
-        UPDATE entities
-        SET context_string = %s,
-            search_vector = (
-                setweight(to_tsvector('simple', alpaca_filter_fts_text(COALESCE(label, ''))), 'A') ||
-                setweight(
-                    to_tsvector(
-                        'simple',
-                        alpaca_filter_fts_text(COALESCE(alpaca_join_text_array(aliases), ''))
-                    ),
-                    'B'
-                ) ||
-                setweight(
-                    to_tsvector(
-                        'simple',
-                        alpaca_filter_fts_context(LEFT(COALESCE(%s::text, ''), 256))
-                    ),
-                    'D'
-                )
-            ),
-            updated_at = NOW()
-        WHERE qid = %s
+        SELECT qid, labels, aliases
+        FROM entities
+        WHERE qid = ANY(%s)
         """
-        payload = [(context, context, qid) for qid, context in rows]
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.executemany(sql, payload)
-            conn.commit()
-        return len(payload)
+                cur.execute(sql, (list(qids),))
+                rows = cur.fetchall()
+        return {
+            qid: (_as_str_list(labels), _as_str_list(aliases))
+            for qid, labels, aliases in rows
+            if isinstance(qid, str)
+        }
 
     def count_entities(self) -> int:
         with self._connect() as conn:
@@ -761,8 +1127,8 @@ class PostgresStore:
             raise ValueError("batch_size must be > 0")
         sql = """
         SELECT
-            qid, label, aliases, context_string,
-            coarse_type, fine_type, item_category, popularity, wikipedia_url, dbpedia_url
+            qid, label, labels, aliases, description, types,
+            coarse_type, fine_type, item_category, popularity, prior, wikipedia_url, dbpedia_url
         FROM entities
         ORDER BY qid
         """
@@ -775,32 +1141,37 @@ class PostgresStore:
                         return
                     out: list[dict[str, Any]] = []
                     for row in rows:
-                        if len(row) < 10:
+                        if len(row) < 13:
                             continue
                         qid = row[0]
                         label = row[1]
                         if not isinstance(qid, str) or not isinstance(label, str):
                             continue
+                        labels = _as_str_list(row[2])
+                        aliases = _as_str_list(row[3])
                         out.append(
                             {
                                 "qid": qid,
                                 "label": label,
-                                "aliases": _as_str_list(row[2]),
-                                "context_string": row[3] if isinstance(row[3], str) else "",
-                                "coarse_type": row[4] if isinstance(row[4], str) else "",
-                                "fine_type": row[5] if isinstance(row[5], str) else "",
-                                "item_category": row[6] if isinstance(row[6], str) else "",
-                                "popularity": float(row[7]) if isinstance(row[7], (int, float)) else 0.0,
+                                "labels": labels,
+                                "aliases": aliases,
+                                "description": row[4] if isinstance(row[4], str) else None,
+                                "types": _as_str_list(row[5]),
+                                "coarse_type": row[6] if isinstance(row[6], str) else "",
+                                "fine_type": row[7] if isinstance(row[7], str) else "",
+                                "item_category": row[8] if isinstance(row[8], str) else "",
+                                "popularity": float(row[9]) if isinstance(row[9], (int, float)) else 0.0,
+                                "prior": float(row[10]) if isinstance(row[10], (int, float)) else 0.0,
                                 "cross_refs": {
                                     key: value
                                     for key, value in (
                                         (
                                             "wikipedia",
-                                            _expand_wikipedia_ref(row[8]) if isinstance(row[8], str) else "",
+                                            _expand_wikipedia_ref(row[11]) if isinstance(row[11], str) else "",
                                         ),
                                         (
                                             "dbpedia",
-                                            _expand_dbpedia_ref(row[9]) if isinstance(row[9], str) else "",
+                                            _expand_dbpedia_ref(row[12]) if isinstance(row[12], str) else "",
                                         ),
                                     )
                                     if value
@@ -808,29 +1179,37 @@ class PostgresStore:
                             }
                         )
                     if out:
-                        yield out
+                        yield self.attach_context_strings(
+                            out,
+                            chunk_size=min(2000, max(1, batch_size)),
+                        )
 
     def _lookup_rows_to_candidates(self, rows: Sequence[Sequence[Any]]) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         for row in rows:
-            if len(row) < 12:
+            if len(row) < 14:
                 continue
             qid = row[0]
             label = row[1]
             if not isinstance(qid, str) or not isinstance(label, str):
                 continue
-            popularity = row[7] if isinstance(row[7], (int, float)) else 0.0
-            prior = row[8] if isinstance(row[8], (int, float)) else _popularity_to_prior_local(float(popularity))
-            score = row[11] if isinstance(row[11], (int, float)) else 0.0
+            labels = _as_str_list(row[2])
+            aliases = _as_str_list(row[3])
+            popularity = row[9] if isinstance(row[9], (int, float)) else 0.0
+            prior = row[10] if isinstance(row[10], (int, float)) else _popularity_to_prior_local(float(popularity))
+            score = row[13] if isinstance(row[13], (int, float)) else 0.0
             candidates.append(
                 {
                     "qid": qid,
                     "label": label,
-                    "aliases": _as_str_list(row[2]),
-                    "context_string": row[3] if isinstance(row[3], str) else "",
-                    "coarse_type": row[4] if isinstance(row[4], str) else "",
-                    "fine_type": row[5] if isinstance(row[5], str) else "",
-                    "item_category": row[6] if isinstance(row[6], str) else "",
+                    "labels": labels,
+                    "aliases": aliases,
+                    "description": row[4] if isinstance(row[4], str) else None,
+                    "types": _as_str_list(row[5]),
+                    "context_string": "",
+                    "coarse_type": row[6] if isinstance(row[6], str) else "",
+                    "fine_type": row[7] if isinstance(row[7], str) else "",
+                    "item_category": row[8] if isinstance(row[8], str) else "",
                     "popularity": float(popularity),
                     "prior": float(prior),
                     "cross_refs": {
@@ -838,11 +1217,11 @@ class PostgresStore:
                         for key, value in (
                             (
                                 "wikipedia",
-                                _expand_wikipedia_ref(row[9]) if isinstance(row[9], str) else "",
+                                _expand_wikipedia_ref(row[11]) if isinstance(row[11], str) else "",
                             ),
                             (
                                 "dbpedia",
-                                _expand_dbpedia_ref(row[10]) if isinstance(row[10], str) else "",
+                                _expand_dbpedia_ref(row[12]) if isinstance(row[12], str) else "",
                             ),
                         )
                         if value
@@ -869,34 +1248,37 @@ class PostgresStore:
         self,
         *,
         mention_query: str,
-        context_query: str,
-        crosslink_query: str,
+        crosslink_exact: Sequence[str],
         coarse_hints: Sequence[str],
         fine_hints: Sequence[str],
         size: int,
     ) -> list[dict[str, Any]]:
         if not mention_query or size <= 0:
             return []
-        aliases_expr = "COALESCE(alpaca_join_text_array(aliases), '')"
-        cross_ref_url_expr = "(COALESCE(wikipedia_url, '') || ' ' || COALESCE(dbpedia_url, ''))"
-        aliases_nonempty_pred = "COALESCE(array_length(aliases, 1), 0) > 0"
-        cross_refs_nonempty_pred = (
-            "(COALESCE(wikipedia_url, '') <> '' OR COALESCE(dbpedia_url, '') <> '')"
-        )
-        where_parts = [
+        exact_crosslinks = [value for value in crosslink_exact if isinstance(value, str) and value]
+        mention_like = f"%{mention_query}%"
+        base_match_sql = (
             "("
-            "search_vector @@ plainto_tsquery('simple', %s) OR "
-            f"label % %s OR ({aliases_nonempty_pred} AND {aliases_expr} % %s) OR "
-            f"(%s <> '' AND {cross_refs_nonempty_pred} AND {cross_ref_url_expr} % %s)"
-            ")"
-        ]
+            "LOWER(label) = LOWER(%s) OR "
+            "label ILIKE %s OR "
+            "EXISTS (SELECT 1 FROM unnest(labels) AS v WHERE LOWER(v) = LOWER(%s)) OR "
+            "EXISTS (SELECT 1 FROM unnest(labels) AS v WHERE v ILIKE %s) OR "
+            "EXISTS (SELECT 1 FROM unnest(aliases) AS v WHERE LOWER(v) = LOWER(%s)) OR "
+            "EXISTS (SELECT 1 FROM unnest(aliases) AS v WHERE v ILIKE %s)"
+        )
         params: list[Any] = [
             mention_query,
+            mention_like,
             mention_query,
+            mention_like,
             mention_query,
-            crosslink_query,
-            crosslink_query,
+            mention_like,
         ]
+        if exact_crosslinks:
+            base_match_sql += " OR wikipedia_url = ANY(%s) OR dbpedia_url = ANY(%s)"
+            params.extend([list(exact_crosslinks), list(exact_crosslinks)])
+        base_match_sql += ")"
+        where_parts = [base_match_sql]
         if coarse_hints:
             where_parts.append("coarse_type = ANY(%s)")
             params.append(list(coarse_hints))
@@ -906,26 +1288,21 @@ class PostgresStore:
 
         sql = f"""
         SELECT
-            qid, label, aliases, context_string,
+            qid, label, labels, aliases, description, types,
             coarse_type, fine_type, item_category, popularity, prior, wikipedia_url, dbpedia_url,
             (
-                COALESCE(ts_rank_cd(search_vector, plainto_tsquery('simple', %s)), 0.0) * 5.0 +
-                GREATEST(
-                    COALESCE(similarity(label, %s), 0.0),
-                    COALESCE(similarity({aliases_expr}, %s), 0.0)
-                ) * 2.0 +
+                CASE WHEN LOWER(label) = LOWER(%s) THEN 4.0 ELSE 0.0 END +
+                CASE WHEN EXISTS (SELECT 1 FROM unnest(labels) AS v WHERE LOWER(v) = LOWER(%s)) THEN 3.0 ELSE 0.0 END +
+                CASE WHEN EXISTS (SELECT 1 FROM unnest(aliases) AS v WHERE LOWER(v) = LOWER(%s)) THEN 2.5 ELSE 0.0 END +
+                CASE WHEN label ILIKE %s THEN 1.5 ELSE 0.0 END +
+                CASE WHEN EXISTS (SELECT 1 FROM unnest(labels) AS v WHERE v ILIKE %s) THEN 1.25 ELSE 0.0 END +
+                CASE WHEN EXISTS (SELECT 1 FROM unnest(aliases) AS v WHERE v ILIKE %s) THEN 1.0 ELSE 0.0 END +
                 CASE
-                    WHEN %s <> '' THEN COALESCE(similarity({cross_ref_url_expr}, %s), 0.0) * 1.5
-                    ELSE 0.0
-                END +
-                CASE
-                    WHEN %s <> '' THEN COALESCE(
-                        ts_rank_cd(
-                            to_tsvector('simple', alpaca_filter_fts_context(LEFT(context_string, 256))),
-                            plainto_tsquery('simple', %s)
-                        ),
-                        0.0
-                    )
+                    WHEN %s THEN
+                        CASE
+                            WHEN wikipedia_url = ANY(%s) OR dbpedia_url = ANY(%s) THEN 1.5
+                            ELSE 0.0
+                        END
                     ELSE 0.0
                 END
             ) AS score
@@ -938,16 +1315,18 @@ class PostgresStore:
             mention_query,
             mention_query,
             mention_query,
-            crosslink_query,
-            crosslink_query,
-            context_query,
-            context_query,
+            mention_like,
+            mention_like,
+            mention_like,
+            bool(exact_crosslinks),
+            list(exact_crosslinks),
+            list(exact_crosslinks),
         ]
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (*score_params, *params, int(size)))
                 rows = cur.fetchall()
-        return self._lookup_rows_to_candidates(rows)
+        return self.attach_context_strings(self._lookup_rows_to_candidates(rows))
 
     def get_query_cache(self, cache_key: str) -> dict[str, Any] | None:
         sql = "SELECT result FROM query_cache WHERE cache_key = %s"
@@ -1043,15 +1422,31 @@ class PostgresStore:
         drop_existing: bool = True,
         unlogged: bool = False,
     ) -> None:
-        table_ident = _quote_identifier(table_name)
+        self._recreate_table_like(
+            source_table="entities",
+            dest_table=table_name,
+            drop_existing=drop_existing,
+            unlogged=unlogged,
+        )
+
+    def _recreate_table_like(
+        self,
+        *,
+        source_table: str,
+        dest_table: str,
+        drop_existing: bool = True,
+        unlogged: bool = False,
+    ) -> None:
+        source_ident = _quote_identifier(source_table)
+        dest_ident = _quote_identifier(dest_table)
         ddl_parts = []
         if drop_existing:
-            ddl_parts.append(f"DROP TABLE IF EXISTS {table_ident}")
+            ddl_parts.append(f"DROP TABLE IF EXISTS {dest_ident}")
         table_kind = "CREATE UNLOGGED TABLE" if unlogged else "CREATE TABLE"
         ddl_parts.append(
             f"{table_kind} "
-            f"{table_ident} "
-            "(LIKE entities INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING STORAGE INCLUDING COMPRESSION)"
+            f"{dest_ident} "
+            f"(LIKE {source_ident} INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING STORAGE INCLUDING COMPRESSION)"
         )
         ddl = ";\n".join(ddl_parts) + ";"
         with self._connect() as conn:
@@ -1059,17 +1454,44 @@ class PostgresStore:
                 cur.execute(ddl)
             conn.commit()
 
-    def truncate_table(self, table_name: str) -> None:
-        table_ident = _quote_identifier(table_name)
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"TRUNCATE TABLE {table_ident}")
-            conn.commit()
+    def recreate_entity_storage_like_tables(
+        self,
+        base_table_name: str,
+        *,
+        drop_existing: bool = True,
+        unlogged: bool = False,
+    ) -> dict[str, str]:
+        self._recreate_table_like(
+            source_table="entities",
+            dest_table=base_table_name,
+            drop_existing=drop_existing,
+            unlogged=unlogged,
+        )
+        return {
+            "entities_table": base_table_name,
+            "payload_table": base_table_name,
+            "context_table": base_table_name,
+        }
 
-    def replicate_entities_for_size_estimation(
+    def _qid_replication_sql(self, *, seed_alias: str = "seed") -> str:
+        return f"""
+        CASE
+            WHEN {seed_alias}.qid ~ '^[QP][0-9]+$' THEN
+                SUBSTRING({seed_alias}.qid FROM 1 FOR 1) ||
+                (
+                    SUBSTRING({seed_alias}.qid FROM 2)::bigint +
+                    (gs.replica_no * %s::bigint)
+                )::text
+            ELSE {seed_alias}.qid || '__r' || gs.replica_no::text
+        END
+        """
+
+    def replicate_entity_storage_for_size_estimation(
         self,
         *,
         dest_table: str,
+        dest_payload_table: str | None = None,
+        dest_context_table: str | None = None,
         target_rows: int,
         seed_rows: int = 0,
         batch_rows: int = 100_000,
@@ -1093,28 +1515,19 @@ class PostgresStore:
             f"CREATE TEMP TABLE {temp_seed_ident} AS "
             f"SELECT * FROM entities ORDER BY qid{seed_limit_sql}"
         )
-
+        qid_expr = self._qid_replication_sql(seed_alias="seed")
         insert_sql = f"""
         INSERT INTO {dest_ident} (
-            qid, label, context_string,
-            aliases, search_vector,
-            coarse_type, fine_type, item_category, popularity, prior,
-            wikipedia_url, dbpedia_url, updated_at
+            qid, label, labels, aliases, description, types, coarse_type, fine_type,
+            item_category, popularity, prior, wikipedia_url, dbpedia_url, updated_at
         )
         SELECT
-            CASE
-                WHEN seed.qid ~ '^[QP][0-9]+$' THEN
-                    SUBSTRING(seed.qid FROM 1 FOR 1) ||
-                    (
-                        SUBSTRING(seed.qid FROM 2)::bigint +
-                        (gs.replica_no * %s::bigint)
-                    )::text
-                ELSE seed.qid || '__r' || gs.replica_no::text
-            END AS qid,
+            {qid_expr} AS qid,
             seed.label,
-            seed.context_string,
+            seed.labels,
             seed.aliases,
-            seed.search_vector,
+            seed.description,
+            seed.types,
             seed.coarse_type,
             seed.fine_type,
             seed.item_category,
@@ -1197,7 +1610,6 @@ class PostgresStore:
                     remaining -= inserted
                     replica_cursor = replica_end + 1
                     chunk_count += 1
-                    conn.commit()
                     if on_chunk is not None:
                         try:
                             on_chunk(
@@ -1210,8 +1622,9 @@ class PostgresStore:
                                 }
                             )
                         except Exception:
-                            # Progress callbacks are best-effort and must not affect data writes.
                             pass
+
+                conn.commit()
 
                 return {
                     "seed_rows_used": seed_count,
@@ -1221,6 +1634,32 @@ class PostgresStore:
                     "replicas_emitted": int(replica_cursor),
                     "chunks": int(chunk_count),
                 }
+
+    def truncate_table(self, table_name: str) -> None:
+        table_ident = _quote_identifier(table_name)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"TRUNCATE TABLE {table_ident}")
+            conn.commit()
+
+    def replicate_entities_for_size_estimation(
+        self,
+        *,
+        dest_table: str,
+        target_rows: int,
+        seed_rows: int = 0,
+        batch_rows: int = 100_000,
+        on_chunk: Callable[[dict[str, int]], None] | None = None,
+        disable_synchronous_commit: bool = False,
+    ) -> dict[str, int]:
+        return self.replicate_entity_storage_for_size_estimation(
+            dest_table=dest_table,
+            target_rows=target_rows,
+            seed_rows=seed_rows,
+            batch_rows=batch_rows,
+            on_chunk=on_chunk,
+            disable_synchronous_commit=disable_synchronous_commit,
+        )
 
     def analyze_table(self, table_name: str) -> None:
         table_ident = _quote_identifier(table_name)
@@ -1236,20 +1675,43 @@ class PostgresStore:
             (SELECT COUNT(*) FROM %s_placeholder) AS rows,
             pg_relation_size(%s::regclass) AS table_bytes,
             pg_indexes_size(%s::regclass) AS index_bytes,
-            pg_total_relation_size(%s::regclass) AS total_bytes
+            pg_total_relation_size(%s::regclass) AS total_bytes,
+            GREATEST(
+                pg_total_relation_size(%s::regclass) -
+                pg_relation_size(%s::regclass) -
+                pg_indexes_size(%s::regclass),
+                0
+            ) AS toast_bytes
         """
         sql = sql.replace("%s_placeholder", _quote_identifier(table_name))
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (table_name, table_name, table_name))
+                cur.execute(
+                    sql,
+                    (
+                        table_name,
+                        table_name,
+                        table_name,
+                        table_name,
+                        table_name,
+                        table_name,
+                    ),
+                )
                 row = cur.fetchone()
-        if not row or len(row) < 4:
-            return {"rows": 0, "table_bytes": 0, "index_bytes": 0, "total_bytes": 0}
+        if not row or len(row) < 5:
+            return {
+                "rows": 0,
+                "table_bytes": 0,
+                "index_bytes": 0,
+                "toast_bytes": 0,
+                "total_bytes": 0,
+            }
         return {
             "rows": int(row[0]) if isinstance(row[0], int) else 0,
             "table_bytes": int(row[1]) if isinstance(row[1], int) else 0,
             "index_bytes": int(row[2]) if isinstance(row[2], int) else 0,
             "total_bytes": int(row[3]) if isinstance(row[3], int) else 0,
+            "toast_bytes": int(row[4]) if isinstance(row[4], int) else 0,
         }
 
     def compact_table_for_lookup(
@@ -1268,12 +1730,11 @@ class PostgresStore:
             "label_exact",         # legacy exact helper
             "aliases_exact",       # legacy exact helper
             "cross_refs_exact",    # legacy exact helper
-            "labels",              # legacy split name variants (or older multilingual map)
             "name_variants",       # temporary normalized alias column (renamed back to aliases)
-            "relation_object_qids",  # only needed to rebuild context_string
             "labels_text",         # legacy text helper
-            "aliases_text",        # legacy text helper replaced by expression indexes
-            "search_document",     # duplicated source text for search_vector
+            "aliases_text",        # legacy text helper
+            "search_document",     # legacy duplicated search text
+            "context_string",      # replaced by lazy triples-backed synthesis
             "cross_refs_text",     # legacy text helper replaced by expression indexes
             "cross_refs",          # raw JSONB; lookup uses explicit URL columns
         ]
@@ -1282,10 +1743,18 @@ class PostgresStore:
         if drop_cross_refs_trgm_index:
             index_drops.append(f"idx_{table_name}_cross_refs_text_trgm")
             index_drops.append(f"idx_{table_name}_cross_refs_url_trgm")
+        index_drops.append(f"idx_{table_name}_aliases_trgm")
         index_drops.append(f"idx_{table_name}_aliases_text_trgm")
+        index_drops.append(f"idx_{table_name}_label_trgm")
+        index_drops.append(f"idx_{table_name}_name_variants_trgm")
         index_drops.append(f"idx_{table_name}_label_exact")
         index_drops.append(f"idx_{table_name}_aliases_exact")
         index_drops.append(f"idx_{table_name}_cross_refs_exact")
+        index_drops.append(f"idx_{table_name}_item_category")
+        if table_name == "entities":
+            index_drops.append("idx_entity_triples_subject_qid")
+            index_drops.append("idx_entity_triples_object_qid")
+            index_drops.append("idx_entity_triples_predicate_pid")
         dropped_tables: list[str] = []
 
         with self._connect() as conn:
@@ -1296,7 +1765,11 @@ class PostgresStore:
                     cur.execute(f"DROP INDEX IF EXISTS {_quote_identifier(index_name)}")
                 if drop_context_inputs_table and table_name == "entities":
                     cur.execute("DROP TABLE IF EXISTS entity_context_inputs")
+                    cur.execute("DROP TABLE IF EXISTS entity_name_payloads")
+                    cur.execute("DROP TABLE IF EXISTS entity_triples")
                     dropped_tables.append("entity_context_inputs")
+                    dropped_tables.append("entity_name_payloads")
+                    dropped_tables.append("entity_triples")
                 if analyze and not vacuum_full:
                     cur.execute(f"ANALYZE {table_ident}")
             conn.commit()
@@ -1361,9 +1834,16 @@ class PostgresStore:
 
     def clear_entities(self) -> None:
         with self._connect() as conn:
+            truncate_name_payloads = self._table_exists(conn, "entity_name_payloads")
+            truncate_context_inputs = self._table_exists(conn, "entity_context_inputs")
             with conn.cursor() as cur:
                 cur.execute("TRUNCATE TABLE entities")
-                cur.execute("TRUNCATE TABLE entity_context_inputs")
+                if self._table_exists(conn, "entity_triples"):
+                    cur.execute("TRUNCATE TABLE entity_triples")
+                if truncate_name_payloads:
+                    cur.execute("TRUNCATE TABLE entity_name_payloads")
+                if truncate_context_inputs:
+                    cur.execute("TRUNCATE TABLE entity_context_inputs")
             conn.commit()
 
     def replace_entities(self, rows: Iterable[EntityRecord], *, batch_size: int) -> int:

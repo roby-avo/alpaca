@@ -248,11 +248,12 @@ def _append_tokens_from_text(
 
 
 def _pick_preferred_label(labels: Mapping[str, str]) -> str:
-    english = labels.get("en")
-    if isinstance(english, str):
-        candidate = normalize_text(english)
-        if candidate:
-            return candidate
+    for language in ("en", "mul"):
+        value = labels.get(language)
+        if isinstance(value, str):
+            candidate = normalize_text(value)
+            if candidate:
+                return candidate
 
     for language in sorted(labels):
         value = labels[language]

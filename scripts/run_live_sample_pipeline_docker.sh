@@ -38,7 +38,7 @@ Options:
 Notes:
   - Uses Postgres table sample_entity_cache for live demo caching.
   - --count is deterministic: probes upward from Q1 and skips missing QIDs (404s).
-  - Automatically prefetches one-hop related entity IDs from claim objects so context strings can be built properly.
+  - Automatically prefetches one-hop related entity IDs from claim objects so lazy context reconstruction has label coverage.
 EOF
 }
 
