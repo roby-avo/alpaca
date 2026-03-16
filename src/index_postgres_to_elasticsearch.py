@@ -541,6 +541,9 @@ def _row_to_document(row: Sequence[Any]) -> dict[str, Any] | None:
         return None
     labels = _clean_terms(row[2])
     aliases = _clean_terms(row[3])
+    has_context_column = len(row) >= 15
+    shift = 1 if has_context_column else 0
+    context_string = row[6] if has_context_column and isinstance(row[6], str) else ""
 
     doc: dict[str, Any] = {
         "qid": qid,
@@ -548,20 +551,20 @@ def _row_to_document(row: Sequence[Any]) -> dict[str, Any] | None:
         "labels": labels,
         "aliases": aliases,
         "types": _clean_terms(row[5]),
-        "context_string": "",
-        "coarse_type": row[6] if isinstance(row[6], str) else "",
-        "fine_type": row[7] if isinstance(row[7], str) else "",
-        "item_category": row[8] if isinstance(row[8], str) else "",
-        "popularity": _as_float(row[9]),
-        "prior": _as_float(row[10]),
+        "context_string": context_string,
+        "coarse_type": row[6 + shift] if isinstance(row[6 + shift], str) else "",
+        "fine_type": row[7 + shift] if isinstance(row[7 + shift], str) else "",
+        "item_category": row[8 + shift] if isinstance(row[8 + shift], str) else "",
+        "popularity": _as_float(row[9 + shift]),
+        "prior": _as_float(row[10 + shift]),
         # Keep compact refs from Postgres to save space.
-        "wikipedia_url": row[11] if isinstance(row[11], str) else "",
-        "dbpedia_url": row[12] if isinstance(row[12], str) else "",
+        "wikipedia_url": row[11 + shift] if isinstance(row[11 + shift], str) else "",
+        "dbpedia_url": row[12 + shift] if isinstance(row[12 + shift], str) else "",
     }
     description = row[4] if isinstance(row[4], str) else ""
     if description:
         doc["description"] = description
-    updated_at = _as_iso_datetime(row[13])
+    updated_at = _as_iso_datetime(row[13 + shift])
     if updated_at:
         doc["updated_at"] = updated_at
     return doc

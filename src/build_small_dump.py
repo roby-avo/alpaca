@@ -67,6 +67,10 @@ def parse_args() -> argparse.Namespace:
         "--ids",
         help="Optional comma-separated explicit IDs (example: Q42,Q90,P31).",
     )
+    parser.add_argument(
+        "--ids-file",
+        help="Optional text file with one explicit ID per line (comments with # allowed).",
+    )
     return parser.parse_args()
 
 
@@ -84,6 +88,17 @@ def parse_entity_id_list(raw: str) -> list[str]:
         seen.add(value)
         ids.append(value)
     return ids
+
+
+def load_entity_id_file(path: Path) -> list[str]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    tokens: list[str] = []
+    for line in lines:
+        cleaned = line.strip()
+        if not cleaned or cleaned.startswith("#"):
+            continue
+        tokens.append(cleaned)
+    return parse_entity_id_list(",".join(tokens))
 
 
 def _write_entity(handle: TextIO, entity: dict[str, Any], is_first: bool) -> None:
@@ -200,10 +215,18 @@ def main() -> int:
         )
         ensure_parent_dir(output_path)
 
-        if args.ids:
-            ids = parse_entity_id_list(args.ids)
+        explicit_selector_count = sum(1 for value in (args.ids, args.ids_file) if value)
+        if explicit_selector_count > 1:
+            raise ValueError("Use only one of --ids or --ids-file.")
+
+        if args.ids or args.ids_file:
+            ids = (
+                parse_entity_id_list(args.ids)
+                if args.ids
+                else load_entity_id_file(Path(args.ids_file).expanduser())
+            )
             if not ids:
-                raise ValueError("No valid IDs were parsed from --ids.")
+                raise ValueError("No valid IDs were parsed from the explicit selector.")
 
             written, missing, scanned = _build_from_ids(
                 source_dump_path=source_dump_path,

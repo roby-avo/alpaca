@@ -84,9 +84,15 @@ docker compose exec -T api python -m src.run_pipeline \
 
 What it does:
 1. Ingest dump entities into Postgres (`entities`) as the single intermediate storage table
-2. Store entity-to-entity Wikidata triples in Postgres (`entity_triples`)
+2. Store a pruned, context-oriented subset of entity-to-entity Wikidata triples in Postgres (`entity_triples`)
 3. Build `context_string` lazily from neighboring entity labels when lookup/export needs it
 4. Build/refresh lean Postgres support indexes (`label` / cross-ref / type + triples edge indexes)
+
+Default triple pruning keeps up to 12 edges per entity and up to 2 per predicate.
+Selection is scored for context usefulness: statement rank, predicate priors, and subject kind
+(for example people prefer occupation/citizenship over generic `instance of`, and locations
+prefer country/admin-area edges).
+Use `--max-entity-triples 0 --max-entity-triples-per-predicate 0` to keep all deduped edges.
 
 ## Live Demo Sample (Cached in Postgres)
 
@@ -115,8 +121,7 @@ This does:
 1. Start local services (`postgres`, `adminer`, `api`)
 2. Fetch live Wikidata seed entities into Postgres `sample_entity_cache`
 3. Optionally prefetch a capped one-hop support sample for context label resolution
-4. Build a compact Wikidata-style dump from the Postgres cache (seed entities only)
-5. Run the Postgres pipeline on the generated dump
+4. Run the Postgres pipeline directly from `sample_entity_cache` (no temporary dump is written)
 
 Useful live demo tuning (to avoid upstream throttling):
 - `--concurrency`
@@ -128,6 +133,12 @@ Quick one-off NER typing check for a live entity:
 
 ```bash
 python -m src.test_live_ner_type --qid Q42 --pretty
+```
+
+Quick one-off BOW/context check for cached QIDs:
+
+```bash
+./scripts/test_qid_bow.sh --ids Q42,Q90
 ```
 
 ## Mirror PostgreSQL Entities to Elasticsearch
@@ -179,7 +190,7 @@ Candidate retrieval uses PostgreSQL only:
 - Prior-aware reranking (`prior` + context/type/name scores)
 - Optional LLM augmentation via `crosslink_hints` in lookup requests
 
-Internally the `entities` table stores explicit multilingual `labels[]` and `aliases[]`, while `entity_triples` stores `(subject_qid, predicate_pid, object_qid)` edges used to build compact neighbor-label context.
+Internally the `entities` table stores explicit multilingual `labels[]` and `aliases[]`, while `entity_triples` stores a pruned `(subject_qid, predicate_pid, object_qid)` edge set used to build compact neighbor-label context.
 
 ## Explore PostgreSQL Data (UI + Stats)
 
@@ -287,12 +298,14 @@ Suggested flow:
 docker compose exec -T api python -m src.simulate_entities_size \
   --target-rows 5000000 \
   --seed-rows 500 \
+  --random-seed 1337 \
   --dest-table entities_size_sim
 ```
-3. Read the output projection (it prints current size and a linear projection to 100M rows by default).
+3. Read the output projection (it prints current entity-table size plus a linear `entity_triples` projection to 100M rows by default).
 
 Notes:
-- This preserves realistic row format after context has already been built.
+- Entities are estimated from deterministic random sampling with replacement from the selected seed rows.
+- `entity_triples` are projected linearly from the sampled entities/triples ratio and the sampled triples table bytes.
 - It is still an estimate: very small seeds can underestimate index size because text diversity is lower than full Wikidata.
 
 ## API Endpoints

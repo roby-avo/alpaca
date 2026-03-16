@@ -7,7 +7,6 @@ ROOT_DIR=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 IDS="${ALPACA_LIVE_SAMPLE_IDS:-}"
 IDS_FILE="${ALPACA_LIVE_SAMPLE_IDS_FILE:-}"
 COUNT="${ALPACA_LIVE_SAMPLE_COUNT:-}"
-OUTPUT_DUMP="${ALPACA_LIVE_SAMPLE_DUMP_PATH:-${ROOT_DIR}/data/input/live_sample_dump.json.bz2}"
 FORCE_REFRESH=0
 LIVE_CONCURRENCY="${ALPACA_LIVE_SAMPLE_CONCURRENCY:-}"
 LIVE_SLEEP_SECONDS="${ALPACA_LIVE_SAMPLE_SLEEP_SECONDS:-}"
@@ -25,7 +24,6 @@ Options:
   --ids CSV           Explicit QIDs for the live demo sample cache (required if --ids-file is omitted).
   --ids-file PATH     Text file with one QID per line (comments with # allowed).
   --count N           Deterministic count mode (probes upward from Q1 and skips missing IDs).
-  --output-dump PATH  Output dump path (default: ./data/input/live_sample_dump.json.bz2).
   --force-refresh     Refetch QIDs even if already present in Postgres sample cache.
   --concurrency N     Live demo fetch concurrency for Wikidata requests (seed fetch; support fetch is internally capped).
   --sleep-seconds S   Delay after successful Wikidata fetches (support fetch has a minimum throttle).
@@ -36,7 +34,7 @@ Options:
   -h, --help          Show this help.
 
 Notes:
-  - Uses Postgres table sample_entity_cache for live demo caching.
+  - Uses Postgres table sample_entity_cache for live demo caching and ingestion.
   - --count is deterministic: probes upward from Q1 and skips missing QIDs (404s).
   - Automatically prefetches one-hop related entity IDs from claim objects so lazy context reconstruction has label coverage.
 EOF
@@ -54,10 +52,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --count)
       COUNT="$2"
-      shift 2
-      ;;
-    --output-dump)
-      OUTPUT_DUMP="$2"
       shift 2
       ;;
     --force-refresh)
@@ -102,12 +96,10 @@ if [ "${SELECTORS}" -ne 1 ]; then
   exit 1
 fi
 
-mkdir -p "$(dirname -- "${OUTPUT_DUMP}")"
-
-echo "Step 1/4: Start local services (Postgres + Adminer + API)"
+echo "Step 1/3: Start local services (Postgres + Adminer + API)"
 docker compose up -d postgres adminer api
 
-echo "Step 2/4: Fetch live Wikidata seed entities (+ one-hop context support entities) into Postgres sample cache"
+echo "Step 2/3: Fetch live Wikidata seed entities (+ one-hop context support entities) into Postgres sample cache"
 set -- docker compose exec -T api python -m src.wikidata_sample_postgres
 if [ -n "${IDS}" ]; then
   set -- "$@" --ids "${IDS}"
@@ -135,23 +127,17 @@ if [ -n "${LIVE_MAX_CONTEXT_SUPPORT_PREFETCH}" ]; then
 fi
 "$@"
 
-echo "Step 3/4: Build compact sample dump from Postgres sample cache"
-set -- docker compose exec -T api python -m src.build_postgres_sample_dump \
-  --output-path "${OUTPUT_DUMP}"
+echo "Step 3/3: Run Postgres pipeline directly from Postgres sample cache"
+set -- docker compose exec -T api python -m src.run_pipeline
 if [ -n "${IDS}" ]; then
-  set -- "$@" --ids "${IDS}"
+  set -- "$@" --sample-cache-ids "${IDS}"
 fi
 if [ -n "${IDS_FILE}" ]; then
-  set -- "$@" --ids-file "${IDS_FILE}"
+  set -- "$@" --sample-cache-ids-file "${IDS_FILE}"
 fi
 if [ -n "${COUNT}" ]; then
-  set -- "$@" --count "${COUNT}"
+  set -- "$@" --sample-cache-count "${COUNT}"
 fi
-"$@"
-
-echo "Step 4/4: Run Postgres pipeline on the generated sample dump"
-set -- docker compose exec -T api python -m src.run_pipeline \
-  --dump-path "${OUTPUT_DUMP}"
 "$@"
 
 echo "Done."

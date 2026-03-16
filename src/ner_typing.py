@@ -453,7 +453,7 @@ def infer_ner_types(
 
     p31_ids = set(_extract_claim_entity_ids(claims, "P31"))
     if p31_ids & HUMAN_INSTANCE_OF_QIDS:
-        return ["PERSON"], ["PERSON"], "claims_p31_human_v1"
+        return ["PERSON"], ["HUMAN"], "claims_p31_human_v1"
 
     text_values = _iter_text_values(labels, aliases, descriptions)
     if not text_values:

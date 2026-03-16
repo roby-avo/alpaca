@@ -3,17 +3,25 @@ from __future__ import annotations
 import unittest
 
 from src.build_postgres_entities import (
+    _build_entity_parse_context,
     _build_entity_context_string,
     _extract_cross_refs,
     _pick_primary_label,
+    _resolve_sample_cache_qids,
     extract_entity_triples,
     infer_item_category,
     transform_entity_to_record,
 )
+from src.common import extract_multilingual_payload
 
 
-def _statement_for_item_qid(numeric_id: int) -> dict[str, object]:
+def _statement_for_item_qid(
+    numeric_id: int,
+    *,
+    rank: str = "normal",
+) -> dict[str, object]:
     return {
+        "rank": rank,
         "mainsnak": {
             "snaktype": "value",
             "datavalue": {
@@ -27,6 +35,13 @@ def _statement_for_item_qid(numeric_id: int) -> dict[str, object]:
 
 
 class BuildPostgresEntitiesCategoryTests(unittest.TestCase):
+    class _StubSampleStore:
+        def __init__(self, qids: list[str]) -> None:
+            self.qids = list(qids)
+
+        def list_sample_entity_ids(self, *, limit: int) -> list[str]:
+            return self.qids[:limit]
+
     def test_primary_label_prefers_english_then_mul(self) -> None:
         self.assertEqual(
             _pick_primary_label({"it": "Roma", "mul": "Rome"}),
@@ -109,6 +124,29 @@ class BuildPostgresEntitiesCategoryTests(unittest.TestCase):
         assert record is not None
         self.assertIsNone(record.description)
 
+    def test_extract_multilingual_payload_removes_aliases_duplicated_by_labels(self) -> None:
+        payload = extract_multilingual_payload(
+            {
+                "labels": {
+                    "en": {"language": "en", "value": "Rome"},
+                    "it": {"language": "it", "value": "Roma"},
+                },
+                "aliases": {
+                    "en": [
+                        {"language": "en", "value": "Rome"},
+                        {"language": "en", "value": "Rome city"},
+                    ],
+                    "it": [
+                        {"language": "it", "value": "Roma"},
+                        {"language": "it", "value": "Roma capitale"},
+                    ],
+                },
+            }
+        )
+
+        self.assertEqual(payload["labels"], {"en": "Rome", "it": "Roma"})
+        self.assertEqual(payload["aliases"], {"en": ["Rome city"], "it": ["Roma capitale"]})
+
     def test_extract_entity_triples_keeps_subject_predicate_object_edges(self) -> None:
         entity = {
             "id": "Q42",
@@ -125,6 +163,161 @@ class BuildPostgresEntitiesCategoryTests(unittest.TestCase):
             [(triple.subject_qid, triple.predicate_pid, triple.object_qid) for triple in triples],
             [("Q42", "P106", "Q36180"), ("Q42", "P31", "Q5")],
         )
+
+    def test_extract_entity_triples_prunes_to_diverse_informative_edges(self) -> None:
+        entity = {
+            "id": "Q42",
+            "type": "item",
+            "claims": {
+                "P31": [_statement_for_item_qid(5, rank="preferred")],
+                "P106": [
+                    _statement_for_item_qid(36_180, rank="preferred"),
+                    _statement_for_item_qid(49_670, rank="normal"),
+                    _statement_for_item_qid(33_999, rank="deprecated"),
+                ],
+                "P166": [
+                    _statement_for_item_qid(1),
+                    _statement_for_item_qid(2),
+                    _statement_for_item_qid(3),
+                ],
+            },
+        }
+
+        triples = extract_entity_triples(
+            entity,
+            max_triples=4,
+            max_triples_per_predicate=2,
+        )
+
+        self.assertEqual(
+            [(triple.predicate_pid, triple.object_qid) for triple in triples],
+            [
+                ("P106", "Q36180"),
+                ("P31", "Q5"),
+                ("P166", "Q1"),
+                ("P106", "Q49670"),
+            ],
+        )
+
+    def test_extract_entity_triples_prefers_person_disambiguators_over_generic_instance_of(self) -> None:
+        entity = {
+            "id": "Q42",
+            "type": "item",
+            "claims": {
+                "P31": [_statement_for_item_qid(5)],
+                "P106": [_statement_for_item_qid(36_180)],
+                "P27": [_statement_for_item_qid(145)],
+                "P39": [_statement_for_item_qid(11_691)],
+                "P166": [_statement_for_item_qid(37922)],
+            },
+        }
+
+        triples = extract_entity_triples(
+            entity,
+            max_triples=4,
+            max_triples_per_predicate=1,
+        )
+
+        self.assertEqual(
+            [(triple.predicate_pid, triple.object_qid) for triple in triples],
+            [
+                ("P106", "Q36180"),
+                ("P27", "Q145"),
+                ("P39", "Q11691"),
+                ("P31", "Q5"),
+            ],
+        )
+
+    def test_extract_entity_triples_uses_subject_kind_to_prioritize_location_context(self) -> None:
+        entity = {
+            "id": "Q84",
+            "type": "item",
+            "labels": {
+                "en": {"language": "en", "value": "London"},
+            },
+            "descriptions": {
+                "en": {"language": "en", "value": "capital city in England"},
+            },
+            "claims": {
+                "P31": [_statement_for_item_qid(515)],
+                "P17": [_statement_for_item_qid(145)],
+                "P131": [_statement_for_item_qid(21)],
+                "P361": [_statement_for_item_qid(22)],
+                "P166": [_statement_for_item_qid(37922)],
+            },
+        }
+
+        parse_context = _build_entity_parse_context(
+            entity,
+            language_allowlist=("en",),
+            max_aliases_per_language=8,
+            disable_ner_classifier=False,
+        )
+
+        self.assertIsNotNone(parse_context)
+        triples = extract_entity_triples(
+            entity,
+            max_triples=4,
+            max_triples_per_predicate=1,
+            parse_context=parse_context,
+        )
+
+        self.assertEqual(
+            [(triple.predicate_pid, triple.object_qid) for triple in triples],
+            [
+                ("P17", "Q145"),
+                ("P131", "Q21"),
+                ("P361", "Q22"),
+                ("P31", "Q515"),
+            ],
+        )
+
+    def test_extract_entity_triples_can_disable_pruning(self) -> None:
+        entity = {
+            "id": "Q42",
+            "type": "item",
+            "claims": {
+                "P106": [
+                    _statement_for_item_qid(36_180),
+                    _statement_for_item_qid(49_670),
+                    _statement_for_item_qid(33_999),
+                ],
+                "P166": [
+                    _statement_for_item_qid(1),
+                    _statement_for_item_qid(2),
+                    _statement_for_item_qid(3),
+                ],
+            },
+        }
+
+        triples = extract_entity_triples(
+            entity,
+            max_triples=0,
+            max_triples_per_predicate=0,
+        )
+
+        self.assertEqual(
+            [(triple.predicate_pid, triple.object_qid) for triple in triples],
+            [
+                ("P106", "Q33999"),
+                ("P166", "Q1"),
+                ("P106", "Q36180"),
+                ("P166", "Q2"),
+                ("P106", "Q49670"),
+                ("P166", "Q3"),
+            ],
+        )
+
+    def test_resolve_sample_cache_qids_uses_cached_count_and_limit(self) -> None:
+        qids = _resolve_sample_cache_qids(
+            self._StubSampleStore(["Q1", "Q2", "Q3"]),
+            sample_cache_ids=None,
+            sample_cache_ids_file=None,
+            sample_cache_count=3,
+            limit=2,
+        )
+
+        self.assertEqual(qids, ["Q1", "Q2"])
 
     def test_property_is_predicate(self) -> None:
         self.assertEqual(infer_item_category({"id": "P31", "type": "property"}), "PREDICATE")

@@ -59,6 +59,10 @@ MAX_STORED_ALIASES = 128
 DEFAULT_INDEX_PROFILE = "lean"
 VALID_INDEX_PROFILES = frozenset({"lean", "full"})
 DEFAULT_MAX_CONTEXT_CHARS = 512
+_SIM_SAMPLE_MULTIPLIER = 1_103_515_245
+_SIM_SAMPLE_SEED_MULTIPLIER = 97_531
+_SIM_SAMPLE_INCREMENT = 12_345
+_SIM_SAMPLE_MODULUS = 2_147_483_647
 
 
 def entity_name_payload_table_name(base_table_name: str) -> str:
@@ -84,6 +88,21 @@ def _quote_identifier(name: str) -> str:
             f"Invalid SQL identifier '{name}'. Use letters, digits, and underscores only."
         )
     return f'"{stripped}"'
+
+
+def sampled_seed_row_number(*, sample_no: int, seed_count: int, random_seed: int) -> int:
+    if sample_no < 0:
+        raise ValueError("sample_no must be >= 0")
+    if seed_count <= 0:
+        raise ValueError("seed_count must be > 0")
+    if random_seed < 0:
+        raise ValueError("random_seed must be >= 0")
+    mixed = (
+        ((sample_no + 1) * _SIM_SAMPLE_MULTIPLIER)
+        + ((random_seed + 1) * _SIM_SAMPLE_SEED_MULTIPLIER)
+        + _SIM_SAMPLE_INCREMENT
+    ) % _SIM_SAMPLE_MODULUS
+    return (mixed % seed_count) + 1
 
 
 def _json_compact(value: Any) -> str:
@@ -1415,6 +1434,38 @@ class PostgresStore:
                 rows = cur.fetchall()
         return [row[0] for row in rows if row and isinstance(row[0], str)]
 
+    def iter_sample_entities(self, qids: Sequence[str], *, batch_size: int) -> Iterator[dict[str, Any]]:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
+        if not qids:
+            return
+
+        normalized_qids: list[str] = []
+        seen: set[str] = set()
+        for qid in qids:
+            if not isinstance(qid, str):
+                continue
+            cleaned = qid.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            normalized_qids.append(cleaned)
+        if not normalized_qids:
+            return
+
+        for start in range(0, len(normalized_qids), batch_size):
+            chunk = normalized_qids[start : start + batch_size]
+            cached = self.get_sample_entities(chunk)
+            missing = [qid for qid in chunk if qid not in cached]
+            if missing:
+                sample = ", ".join(missing[:5])
+                raise ValueError(
+                    f"Missing {len(missing)} requested QIDs in sample_entity_cache"
+                    f"{': ' + sample if sample else ''}."
+                )
+            for qid in chunk:
+                yield cached[qid]
+
     def recreate_entities_like_table(
         self,
         table_name: str,
@@ -1473,16 +1524,21 @@ class PostgresStore:
             "context_table": base_table_name,
         }
 
-    def _qid_replication_sql(self, *, seed_alias: str = "seed") -> str:
+    def _qid_replication_sql(
+        self,
+        *,
+        seed_alias: str = "seed",
+        sample_no_expr: str = "gs.sample_no",
+    ) -> str:
         return f"""
         CASE
             WHEN {seed_alias}.qid ~ '^[QP][0-9]+$' THEN
                 SUBSTRING({seed_alias}.qid FROM 1 FOR 1) ||
                 (
                     SUBSTRING({seed_alias}.qid FROM 2)::bigint +
-                    (gs.replica_no * %s::bigint)
+                    (({sample_no_expr} + 1) * %s::bigint)
                 )::text
-            ELSE {seed_alias}.qid || '__r' || gs.replica_no::text
+            ELSE {seed_alias}.qid || '__r' || ({sample_no_expr} + 1)::text
         END
         """
 
@@ -1495,6 +1551,7 @@ class PostgresStore:
         target_rows: int,
         seed_rows: int = 0,
         batch_rows: int = 100_000,
+        random_seed: int = 0,
         on_chunk: Callable[[dict[str, int]], None] | None = None,
         disable_synchronous_commit: bool = False,
     ) -> dict[str, int]:
@@ -1504,6 +1561,8 @@ class PostgresStore:
             raise ValueError("seed_rows must be >= 0")
         if batch_rows <= 0:
             raise ValueError("batch_rows must be > 0")
+        if random_seed < 0:
+            raise ValueError("random_seed must be >= 0")
 
         dest_ident = _quote_identifier(dest_table)
         temp_seed = "_alpaca_entities_sim_seed"
@@ -1513,9 +1572,12 @@ class PostgresStore:
         seed_limit_params: tuple[Any, ...] = () if seed_rows == 0 else (int(seed_rows),)
         create_seed_sql = (
             f"CREATE TEMP TABLE {temp_seed_ident} AS "
-            f"SELECT * FROM entities ORDER BY qid{seed_limit_sql}"
+            "SELECT "
+            "    ROW_NUMBER() OVER (ORDER BY seed.qid) AS seed_row_no, "
+            "    seed.* "
+            f"FROM (SELECT * FROM entities ORDER BY qid{seed_limit_sql}) AS seed"
         )
-        qid_expr = self._qid_replication_sql(seed_alias="seed")
+        qid_expr = self._qid_replication_sql(seed_alias="seed", sample_no_expr="gs.sample_no")
         insert_sql = f"""
         INSERT INTO {dest_ident} (
             qid, label, labels, aliases, description, types, coarse_type, fine_type,
@@ -1536,9 +1598,18 @@ class PostgresStore:
             seed.wikipedia_url,
             seed.dbpedia_url,
             seed.updated_at
-        FROM {temp_seed_ident} AS seed
-        CROSS JOIN generate_series(%s::bigint, %s::bigint) AS gs(replica_no)
-        LIMIT %s
+        FROM generate_series(%s::bigint, %s::bigint) AS gs(sample_no)
+        JOIN {temp_seed_ident} AS seed
+          ON seed.seed_row_no = (
+              (
+                  (
+                      (((gs.sample_no + 1) * {_SIM_SAMPLE_MULTIPLIER}::bigint) +
+                      ((%s::bigint + 1) * {_SIM_SAMPLE_SEED_MULTIPLIER}::bigint) +
+                      {_SIM_SAMPLE_INCREMENT}::bigint
+                  ) %% {_SIM_SAMPLE_MODULUS}::bigint
+              ) %% %s::bigint
+              ) + 1
+          )
         """
 
         with self._connect() as conn:
@@ -1575,29 +1646,22 @@ class PostgresStore:
                     )
 
                 stride = max(1, max_numeric_qid + 1)
-                max_replicas_per_chunk = max(1, int(batch_rows) // seed_count)
                 remaining = int(target_rows)
-                replica_cursor = 0
+                sample_cursor = 0
                 inserted_total = 0
                 chunk_count = 0
 
                 while remaining > 0:
-                    replicas_in_chunk = max(
-                        1,
-                        min(
-                            max_replicas_per_chunk,
-                            (remaining + seed_count - 1) // seed_count,
-                        ),
-                    )
-                    replica_end = replica_cursor + replicas_in_chunk - 1
-                    rows_this_chunk = min(remaining, seed_count * replicas_in_chunk)
+                    rows_this_chunk = min(remaining, int(batch_rows))
+                    sample_end = sample_cursor + rows_this_chunk - 1
                     cur.execute(
                         insert_sql,
                         (
                             int(stride),
-                            int(replica_cursor),
-                            int(replica_end),
-                            int(rows_this_chunk),
+                            int(sample_cursor),
+                            int(sample_end),
+                            int(random_seed),
+                            int(seed_count),
                         ),
                     )
                     inserted = cur.rowcount if isinstance(cur.rowcount, int) else 0
@@ -1608,7 +1672,7 @@ class PostgresStore:
                         )
                     inserted_total += inserted
                     remaining -= inserted
-                    replica_cursor = replica_end + 1
+                    sample_cursor = sample_end + 1
                     chunk_count += 1
                     if on_chunk is not None:
                         try:
@@ -1618,7 +1682,7 @@ class PostgresStore:
                                     "chunk_rows": int(inserted),
                                     "rows_inserted_total": int(inserted_total),
                                     "rows_remaining": int(remaining),
-                                    "replicas_emitted": int(replica_cursor),
+                                    "samples_emitted": int(sample_cursor),
                                 }
                             )
                         except Exception:
@@ -1631,7 +1695,8 @@ class PostgresStore:
                     "target_rows": int(target_rows),
                     "inserted_rows": inserted_total,
                     "qid_stride": int(stride),
-                    "replicas_emitted": int(replica_cursor),
+                    "samples_emitted": int(sample_cursor),
+                    "random_seed": int(random_seed),
                     "chunks": int(chunk_count),
                 }
 
@@ -1649,6 +1714,7 @@ class PostgresStore:
         target_rows: int,
         seed_rows: int = 0,
         batch_rows: int = 100_000,
+        random_seed: int = 0,
         on_chunk: Callable[[dict[str, int]], None] | None = None,
         disable_synchronous_commit: bool = False,
     ) -> dict[str, int]:
@@ -1657,6 +1723,7 @@ class PostgresStore:
             target_rows=target_rows,
             seed_rows=seed_rows,
             batch_rows=batch_rows,
+            random_seed=random_seed,
             on_chunk=on_chunk,
             disable_synchronous_commit=disable_synchronous_commit,
         )

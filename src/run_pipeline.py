@@ -4,6 +4,10 @@ import argparse
 import os
 import sys
 
+from .build_postgres_entities import (
+    DEFAULT_MAX_ENTITY_TRIPLES,
+    DEFAULT_MAX_ENTITY_TRIPLES_PER_PREDICATE,
+)
 from .build_postgres_entities import run_pass1 as run_postgres_pass1
 from .build_postgres_entities import run_pass2 as run_postgres_pass2
 from .common import (
@@ -40,6 +44,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dump-path", help="Input dump path (.json/.json.gz/.json.bz2).")
     parser.add_argument("--postgres-dsn", help="Postgres DSN.")
+    parser.add_argument(
+        "--sample-cache-ids",
+        help="Comma-separated QIDs from Postgres sample_entity_cache (example: Q42,Q90,Q64).",
+    )
+    parser.add_argument(
+        "--sample-cache-ids-file",
+        help="Text file with one QID per line for Postgres sample_entity_cache.",
+    )
+    parser.add_argument(
+        "--sample-cache-count",
+        type=parse_positive_int,
+        help="Read the first N cached sample QIDs by numeric order from sample_entity_cache.",
+    )
 
     parser.add_argument(
         "--limit",
@@ -97,15 +114,39 @@ def parse_args() -> argparse.Namespace:
         default=8,
         help="Max aliases per language used for lexical typing (default: 8).",
     )
+    parser.add_argument(
+        "--max-entity-triples",
+        type=parse_non_negative_int,
+        default=DEFAULT_MAX_ENTITY_TRIPLES,
+        help=(
+            "Per-entity cap for stored entity_triples after heuristic pruning "
+            f"(default: {DEFAULT_MAX_ENTITY_TRIPLES}, 0 keeps all)."
+        ),
+    )
+    parser.add_argument(
+        "--max-entity-triples-per-predicate",
+        type=parse_non_negative_int,
+        default=DEFAULT_MAX_ENTITY_TRIPLES_PER_PREDICATE,
+        help=(
+            "Per-predicate cap applied before the entity_triples cap "
+            f"(default: {DEFAULT_MAX_ENTITY_TRIPLES_PER_PREDICATE}, 0 keeps all)."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
-        dump_path = resolve_dump_path(args.dump_path)
         postgres_dsn = resolve_postgres_dsn(args.postgres_dsn)
         language_allowlist = parse_language_allowlist(args.languages, arg_name="--languages")
+        sample_cache_selector_count = (
+            sum(1 for value in (args.sample_cache_ids, args.sample_cache_ids_file) if value)
+            + (1 if args.sample_cache_count is not None else 0)
+        )
+        dump_path = None if sample_cache_selector_count else resolve_dump_path(args.dump_path)
+        if sample_cache_selector_count and args.dump_path:
+            raise ValueError("Use either --dump-path or --sample-cache-* selectors, not both.")
 
         if not args.skip_pass1:
             pass1_status = run_postgres_pass1(
@@ -116,6 +157,11 @@ def main() -> int:
                 language_allowlist=language_allowlist,
                 max_aliases_per_language=args.max_aliases_per_language,
                 disable_ner_classifier=args.disable_ner_classifier,
+                max_entity_triples=args.max_entity_triples,
+                max_entity_triples_per_predicate=args.max_entity_triples_per_predicate,
+                sample_cache_ids=args.sample_cache_ids,
+                sample_cache_ids_file=args.sample_cache_ids_file,
+                sample_cache_count=args.sample_cache_count,
                 worker_count=args.workers,
                 expected_entity_total=(args.expected_entity_total or None),
             )
