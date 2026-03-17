@@ -135,11 +135,17 @@ Quick one-off NER typing check for a live entity:
 python -m src.test_live_ner_type --qid Q42 --pretty
 ```
 
-Quick one-off BOW/context check for cached QIDs:
+Quick one-off BOW check for cached QIDs:
 
 ```bash
 ./scripts/test_qid_bow.sh --ids Q42,Q90
 ```
+
+This helper emits a single graph-derived `bow` built from `entity_triples` by resolving and tokenizing:
+- outgoing predicate labels
+- outgoing neighbor labels
+- incoming predicate labels
+- incoming neighbor labels
 
 ## Mirror PostgreSQL Entities to Elasticsearch
 
@@ -289,7 +295,7 @@ curl -s http://localhost:9200/<index_name>/_search \
 For demonstrative sizing (without ingesting the full dump), use a small live sample to build a realistic `entities` + `entity_triples` footprint, then replicate the `entities` rows into a separate simulation table.
 
 Suggested flow:
-1. Build a small but real sample (`sample_entity_cache` + pass1; pass2 is now a no-op):
+1. Build a small but real sample (`sample_entity_cache` + pass1):
 ```bash
 ./scripts/run_live_sample_pipeline_docker.sh --count 500
 ```

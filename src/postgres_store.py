@@ -994,6 +994,68 @@ class PostgresStore:
         out.sort(key=lambda item: item[0])
         return out
 
+    def load_entity_triple_neighbors(
+        self,
+        qids: Sequence[str],
+    ) -> dict[str, dict[str, list[tuple[str, str]]]]:
+        normalized_qids: list[str] = []
+        seen: set[str] = set()
+        for qid in qids:
+            if not isinstance(qid, str):
+                continue
+            cleaned = qid.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            normalized_qids.append(cleaned)
+        if not normalized_qids:
+            return {}
+
+        result: dict[str, dict[str, list[tuple[str, str]]]] = {
+            qid: {"outgoing": [], "incoming": []}
+            for qid in normalized_qids
+        }
+        outgoing_sql = """
+        SELECT
+            subject_qid,
+            predicate_pid,
+            object_qid
+        FROM entity_triples
+        WHERE subject_qid = ANY(%s)
+        ORDER BY subject_qid, predicate_pid, object_qid
+        """
+        incoming_sql = """
+        SELECT
+            object_qid,
+            predicate_pid,
+            subject_qid
+        FROM entity_triples
+        WHERE object_qid = ANY(%s)
+        ORDER BY object_qid, predicate_pid, subject_qid
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(outgoing_sql, (list(normalized_qids),))
+                outgoing_rows = cur.fetchall()
+                cur.execute(incoming_sql, (list(normalized_qids),))
+                incoming_rows = cur.fetchall()
+
+        for qid, predicate_pid, object_qid in outgoing_rows:
+            if not isinstance(qid, str) or not isinstance(predicate_pid, str) or not isinstance(object_qid, str):
+                continue
+            if qid not in result:
+                continue
+            result[qid]["outgoing"].append((predicate_pid, object_qid))
+
+        for qid, predicate_pid, subject_qid in incoming_rows:
+            if not isinstance(qid, str) or not isinstance(predicate_pid, str) or not isinstance(subject_qid, str):
+                continue
+            if qid not in result:
+                continue
+            result[qid]["incoming"].append((predicate_pid, subject_qid))
+
+        return result
+
     def resolve_labels(self, qids: Sequence[str]) -> dict[str, str]:
         if not qids:
             return {}

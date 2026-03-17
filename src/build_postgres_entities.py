@@ -1040,50 +1040,16 @@ def run_pass1(
     )
     return 0
 
-
-def run_pass2(
-    *,
-    postgres_dsn: str,
-    batch_size: int = 1000,
-    worker_count: int | None = None,
-) -> int:
-    if batch_size <= 0:
-        raise ValueError("--context-batch-size must be > 0")
-    store = PostgresStore(postgres_dsn)
-    store.ensure_schema()
-    total_entities = store.count_entities()
-    print(
-        "Skipped Postgres pass2:",
-        f"entities={total_entities}",
-        "reason=context_string is built lazily from entity_triples",
-        f"batch_size={batch_size}",
-        f"workers={max(1, worker_count or min(8, (os.cpu_count() or 1)))}",
-    )
-    return 0
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Postgres ingestion for deterministic entity lookup "
-            "(pass2 is a compatibility no-op; input can be a dump or sample_entity_cache)."
+            "(input can be a dump or sample_entity_cache)."
         )
     )
     parser.add_argument("--dump-path", help=f"Input dump path. Overrides ${DUMP_PATH_ENV}.")
     parser.add_argument("--postgres-dsn", help="Postgres DSN.")
-    parser.add_argument(
-        "--mode",
-        choices=("pass1", "pass2", "all"),
-        default="all",
-        help="Which ingestion phase(s) to run (pass2 is kept only for compatibility).",
-    )
     parser.add_argument("--batch-size", type=parse_positive_int, default=5000)
-    parser.add_argument(
-        "--context-batch-size",
-        type=parse_positive_int,
-        default=1000,
-        help="Deprecated compatibility option; pass2 no longer materializes context strings.",
-    )
     parser.add_argument("--limit", type=parse_non_negative_int, default=0)
     parser.add_argument(
         "--expected-entity-total",
@@ -1154,36 +1120,23 @@ def main() -> int:
             dump_path = resolve_dump_path(args.dump_path)
         elif args.dump_path:
             raise ValueError("Use either --dump-path or --sample-cache-* selectors, not both.")
-        if args.mode in {"pass1", "all"}:
-            language_allowlist = parse_language_allowlist(args.languages, arg_name="--languages")
-            status = run_pass1(
-                dump_path=dump_path,
-                postgres_dsn=postgres_dsn,
-                batch_size=args.batch_size,
-                limit=args.limit,
-                language_allowlist=language_allowlist,
-                max_aliases_per_language=args.max_aliases_per_language,
-                disable_ner_classifier=args.disable_ner_classifier,
-                max_entity_triples=args.max_entity_triples,
-                max_entity_triples_per_predicate=args.max_entity_triples_per_predicate,
-                sample_cache_ids=args.sample_cache_ids,
-                sample_cache_ids_file=args.sample_cache_ids_file,
-                sample_cache_count=args.sample_cache_count,
-                worker_count=args.workers,
-                expected_entity_total=(args.expected_entity_total or None),
-            )
-            if status != 0:
-                return status
-
-        if args.mode in {"pass2", "all"}:
-            status = run_pass2(
-                postgres_dsn=postgres_dsn,
-                batch_size=args.context_batch_size,
-                worker_count=args.workers,
-            )
-            if status != 0:
-                return status
-        return 0
+        language_allowlist = parse_language_allowlist(args.languages, arg_name="--languages")
+        return run_pass1(
+            dump_path=dump_path,
+            postgres_dsn=postgres_dsn,
+            batch_size=args.batch_size,
+            limit=args.limit,
+            language_allowlist=language_allowlist,
+            max_aliases_per_language=args.max_aliases_per_language,
+            disable_ner_classifier=args.disable_ner_classifier,
+            max_entity_triples=args.max_entity_triples,
+            max_entity_triples_per_predicate=args.max_entity_triples_per_predicate,
+            sample_cache_ids=args.sample_cache_ids,
+            sample_cache_ids_file=args.sample_cache_ids_file,
+            sample_cache_count=args.sample_cache_count,
+            worker_count=args.workers,
+            expected_entity_total=(args.expected_entity_total or None),
+        )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

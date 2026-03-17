@@ -51,17 +51,30 @@ class CachedQidBowCliTests(unittest.TestCase):
         record = build_cached_qid_bow_record(
             _sample_entity(),
             qid="Q42",
-            context_label_map={"Q5": "human", "Q145": "United Kingdom"},
+            outgoing_triples=[("P31", "Q5"), ("P27", "Q145")],
+            incoming_triples=[("P50", "Q9001")],
+            triple_label_map={
+                "P31": "instance of",
+                "P27": "country of citizenship",
+                "P50": "author",
+                "Q5": "human",
+                "Q145": "United Kingdom",
+                "Q9001": "Mostly Harmless",
+            },
             language_allowlist=("en",),
             max_aliases_per_language=8,
             max_bow_tokens=128,
-            max_context_object_ids=32,
-            max_context_chars=640,
         )
 
         self.assertEqual(record["aliases"]["en"], ["Doug Adams"])
-        self.assertIn("human", record["context"].casefold())
-        self.assertIn("united kingdom", record["context"].casefold())
+        self.assertIn("instance", record["bow"])
+        self.assertIn("citizenship", record["bow"])
+        self.assertIn("author", record["bow"])
+        self.assertIn("mostly", record["bow"])
+        self.assertIn("human", record["bow"])
+        self.assertIn("united", record["bow"])
+        self.assertNotIn("writer", record["bow"])
+        self.assertNotIn("context", record)
 
     @patch("src.test_qid_bow.resolve_postgres_dsn", return_value="postgresql://example")
     @patch("src.test_qid_bow.PostgresStore")
@@ -77,10 +90,24 @@ class CachedQidBowCliTests(unittest.TestCase):
                 "claims": {},
             },
         }
-        mock_store.resolve_sample_cache_labels.side_effect = [
-            {"Q5": "human", "Q145": "United Kingdom"},
-            {},
-        ]
+        mock_store.load_entity_triple_neighbors.return_value = {
+            "Q42": {
+                "outgoing": [("P31", "Q5"), ("P27", "Q145")],
+                "incoming": [("P50", "Q9001")],
+            },
+            "Q1": {
+                "outgoing": [],
+                "incoming": [],
+            },
+        }
+        mock_store.resolve_labels.return_value = {
+            "P31": "instance of",
+            "P27": "country of citizenship",
+            "P50": "author",
+            "Q5": "human",
+            "Q145": "United Kingdom",
+            "Q9001": "Mostly Harmless",
+        }
 
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -91,6 +118,9 @@ class CachedQidBowCliTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         lines = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
         self.assertEqual([line["id"] for line in lines], ["Q42", "Q1"])
+        self.assertIn("instance", lines[0]["bow"])
+        self.assertIn("mostly", lines[0]["bow"])
+        self.assertEqual(lines[1]["bow"], "")
 
     @patch("src.test_qid_bow.resolve_postgres_dsn", return_value="postgresql://example")
     @patch("src.test_qid_bow.PostgresStore")
