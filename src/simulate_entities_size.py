@@ -8,6 +8,8 @@ from .postgres_store import PostgresStore, PostgresStoreError
 
 
 DEFAULT_PROJECT_ROWS = 100_000_000
+DEFAULT_SIM_BATCH_ROWS = 500_000
+DEFAULT_RANDOM_SEED = 1337
 
 
 def parse_positive_int(raw: str) -> int:
@@ -41,12 +43,56 @@ def _format_bytes(num_bytes: int) -> str:
     return f"{int(num_bytes)} B"
 
 
+def _project_linear_storage(current_stats: dict[str, int], *, current_rows: int, target_rows: int) -> dict[str, int]:
+    if current_rows <= 0 or target_rows <= 0:
+        return {
+            "table_bytes": 0,
+            "toast_bytes": 0,
+            "index_bytes": 0,
+            "total_bytes": 0,
+        }
+    return {
+        "table_bytes": int((int(current_stats["table_bytes"]) / current_rows) * target_rows),
+        "toast_bytes": int((int(current_stats["toast_bytes"]) / current_rows) * target_rows),
+        "index_bytes": int((int(current_stats["index_bytes"]) / current_rows) * target_rows),
+        "total_bytes": int((int(current_stats["total_bytes"]) / current_rows) * target_rows),
+    }
+
+
+def project_entity_triple_stats(
+    *,
+    sample_entities: int,
+    triple_stats: dict[str, int],
+    project_rows: int,
+) -> dict[str, int | float]:
+    active_sample_entities = max(1, int(sample_entities))
+    sample_triples = max(0, int(triple_stats["rows"]))
+    triples_per_entity = sample_triples / active_sample_entities
+    projected_triples = int(triples_per_entity * int(project_rows))
+    projected_sizes = _project_linear_storage(
+        triple_stats,
+        current_rows=max(1, sample_triples),
+        target_rows=projected_triples,
+    ) if sample_triples else {
+        "table_bytes": 0,
+        "toast_bytes": 0,
+        "index_bytes": 0,
+        "total_bytes": 0,
+    }
+    return {
+        "sample_triples": sample_triples,
+        "triples_per_entity": triples_per_entity,
+        "projected_triples": projected_triples,
+        **projected_sizes,
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a Postgres size-estimation simulation table by replicating already-built "
-            "rows from entities. This preserves realistic row shape (including context_string and "
-            "search columns) while avoiding a full Wikidata ingest."
+            "Create Postgres size-estimation simulation tables by replicating already-built "
+            "rows from entities. This preserves realistic row "
+            "shape while avoiding a full Wikidata ingest."
         )
     )
     parser.add_argument("--postgres-dsn", help="Postgres DSN (defaults to ALPACA_POSTGRES_DSN).")
@@ -73,8 +119,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch-rows",
         type=parse_positive_int,
-        default=100_000,
-        help="Rows inserted per replication batch (default: 100000).",
+        default=DEFAULT_SIM_BATCH_ROWS,
+        help=f"Rows inserted per replication batch (default: {DEFAULT_SIM_BATCH_ROWS}).",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=parse_non_negative_int,
+        default=DEFAULT_RANDOM_SEED,
+        help=f"Deterministic RNG seed for seed-row sampling with replacement (default: {DEFAULT_RANDOM_SEED}).",
     )
     parser.add_argument(
         "--project-rows",
@@ -86,6 +138,12 @@ def parse_args() -> argparse.Namespace:
         "--skip-indexes",
         action="store_true",
         help="Do not build lookup indexes on the simulation table (faster, less realistic).",
+    )
+    parser.add_argument(
+        "--index-profile",
+        choices=("lean", "full"),
+        default="lean",
+        help="Index profile to build on the simulation table when indexes are enabled (default: lean).",
     )
     parser.add_argument(
         "--skip-analyze",
@@ -129,10 +187,11 @@ def main() -> int:
             store.truncate_table(args.dest_table)
 
         print(
-            "Replicating entities rows for size simulation:",
+            "Replicating entity storage rows for size simulation:",
             f"target_rows={args.target_rows}",
             f"seed_rows={args.seed_rows or 'all'}",
             f"batch_rows={args.batch_rows}",
+            f"random_seed={args.random_seed}",
         )
         inserted_progress = 0
         with tqdm(total=int(args.target_rows), desc="sim-replicate", unit="row") as progress:
@@ -150,11 +209,12 @@ def main() -> int:
                     remaining=int(stats.get("rows_remaining", 0)),
                 )
 
-            replication = store.replicate_entities_for_size_estimation(
+            replication = store.replicate_entity_storage_for_size_estimation(
                 dest_table=args.dest_table,
                 target_rows=int(args.target_rows),
                 seed_rows=int(args.seed_rows),
                 batch_rows=int(args.batch_rows),
+                random_seed=int(args.random_seed),
                 on_chunk=_on_chunk,
                 disable_synchronous_commit=bool(args.fast_load),
             )
@@ -163,8 +223,8 @@ def main() -> int:
                 inserted_progress = int(args.target_rows)
 
         if not args.skip_indexes:
-            print(f"Building lookup indexes on {args.dest_table} (GIN/trgm/exact/type)...")
-            store.ensure_search_indexes(args.dest_table)
+            print(f"Building lookup indexes on {args.dest_table} (profile={args.index_profile})...")
+            store.ensure_search_indexes(args.dest_table, index_profile=args.index_profile)
         else:
             print("Skipping index creation (--skip-indexes).")
 
@@ -172,35 +232,66 @@ def main() -> int:
             print(f"Running ANALYZE on {args.dest_table}...")
             store.analyze_table(args.dest_table)
 
-        stats = store.table_storage_stats(args.dest_table)
-        rows = max(1, int(stats["rows"]))
+        entity_stats = store.table_storage_stats(args.dest_table)
+        rows = max(1, int(entity_stats["rows"]))
         project_rows = int(args.project_rows)
-        projected_table = int((stats["table_bytes"] / rows) * project_rows)
-        projected_index = int((stats["index_bytes"] / rows) * project_rows)
-        projected_total = int((stats["total_bytes"] / rows) * project_rows)
+        projected = _project_linear_storage(
+            entity_stats,
+            current_rows=rows,
+            target_rows=project_rows,
+        )
+        sample_entities = max(1, store.count_entities())
+        triple_stats = store.table_storage_stats("entity_triples")
+        triple_projection = project_entity_triple_stats(
+            sample_entities=sample_entities,
+            triple_stats=triple_stats,
+            project_rows=project_rows,
+        )
 
         print("Simulation complete:")
         print(
-            f"  dest_table={args.dest_table} rows={stats['rows']} "
-            f"(seed_rows_used={replication['seed_rows_used']} stride={replication['qid_stride']} chunks={replication.get('chunks', 0)})"
+            f"  entities_table={args.dest_table} rows={entity_stats['rows']} "
+            f"(seed_rows_used={replication['seed_rows_used']} stride={replication['qid_stride']} "
+            f"chunks={replication.get('chunks', 0)} random_seed={replication.get('random_seed', args.random_seed)})"
         )
         if args.fast_load:
             print("  mode=fast_load (UNLOGGED table + synchronous_commit=off during replication)")
         print(
-            "  current_size:",
-            f"table={_format_bytes(stats['table_bytes'])}",
-            f"indexes={_format_bytes(stats['index_bytes'])}",
-            f"total={_format_bytes(stats['total_bytes'])}",
+            "  current_entities:",
+            f"table={_format_bytes(entity_stats['table_bytes'])}",
+            f"toast={_format_bytes(entity_stats['toast_bytes'])}",
+            f"indexes={_format_bytes(entity_stats['index_bytes'])}",
+            f"total={_format_bytes(entity_stats['total_bytes'])}",
         )
         print(
-            f"  projected_{project_rows}_rows:",
-            f"table={_format_bytes(projected_table)}",
-            f"indexes={_format_bytes(projected_index)}",
-            f"total={_format_bytes(projected_total)}",
+            f"  projected_{project_rows}_rows_entities:",
+            f"table={_format_bytes(projected['table_bytes'])}",
+            f"toast={_format_bytes(projected['toast_bytes'])}",
+            f"indexes={_format_bytes(projected['index_bytes'])}",
+            f"total={_format_bytes(projected['total_bytes'])}",
         )
         print(
-            "  note=This is a demonstrative estimate based on replicated row shapes. "
-            "Index sizes can be underestimated if the seed sample is too small or text diversity is low."
+            f"  sampled_entity_triples: rows={triple_projection['sample_triples']} "
+            f"(sample_entities={sample_entities} triples_per_entity={triple_projection['triples_per_entity']:.3f})"
+        )
+        print(
+            "  current_entity_triples:",
+            f"table={_format_bytes(triple_stats['table_bytes'])}",
+            f"toast={_format_bytes(triple_stats['toast_bytes'])}",
+            f"indexes={_format_bytes(triple_stats['index_bytes'])}",
+            f"total={_format_bytes(triple_stats['total_bytes'])}",
+        )
+        print(
+            f"  projected_{project_rows}_rows_entity_triples:",
+            f"rows={triple_projection['projected_triples']}",
+            f"table={_format_bytes(int(triple_projection['table_bytes']))}",
+            f"toast={_format_bytes(int(triple_projection['toast_bytes']))}",
+            f"indexes={_format_bytes(int(triple_projection['index_bytes']))}",
+            f"total={_format_bytes(int(triple_projection['total_bytes']))}",
+        )
+        print(
+            "  note=Entities are estimated from deterministic random sampling with replacement from the selected seed rows. "
+            "entity_triples are projected linearly from the current sampled entities/entity_triples footprint."
         )
         return 0
     except (ValueError, PostgresStoreError) as exc:

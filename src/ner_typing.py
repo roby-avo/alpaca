@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from .common import normalize_text, tokenize
 
@@ -36,6 +37,7 @@ FINE_TYPE_RULES: tuple[FineTypeRule, ...] = (
                 "scientist",
                 "artist",
                 "director",
+                "filmmaker",
                 "poet",
                 "philosopher",
                 "journalist",
@@ -325,6 +327,62 @@ FINE_TYPE_RULES: tuple[FineTypeRule, ...] = (
     ),
 )
 
+HUMAN_INSTANCE_OF_QIDS = frozenset({"Q5"})
+
+
+def _extract_claim_entity_ids(
+    claims: Mapping[str, Any] | None,
+    property_id: str,
+    *,
+    limit: int = 16,
+) -> list[str]:
+    if not isinstance(claims, Mapping) or limit <= 0:
+        return []
+
+    statements = claims.get(property_id)
+    if not isinstance(statements, Sequence) or isinstance(statements, (str, bytes, bytearray)):
+        return []
+
+    values: list[str] = []
+    seen: set[str] = set()
+    for statement in statements:
+        if len(values) >= limit:
+            break
+        if not isinstance(statement, Mapping):
+            continue
+
+        mainsnak = statement.get("mainsnak")
+        if not isinstance(mainsnak, Mapping):
+            continue
+        if mainsnak.get("snaktype") != "value":
+            continue
+
+        datavalue = mainsnak.get("datavalue")
+        if not isinstance(datavalue, Mapping):
+            continue
+
+        raw_value = datavalue.get("value")
+        if not isinstance(raw_value, Mapping):
+            continue
+
+        candidate = raw_value.get("id")
+        if not isinstance(candidate, str):
+            entity_type = raw_value.get("entity-type")
+            numeric_id = raw_value.get("numeric-id")
+            if entity_type == "item" and isinstance(numeric_id, int):
+                candidate = f"Q{numeric_id}"
+            elif entity_type == "property" and isinstance(numeric_id, int):
+                candidate = f"P{numeric_id}"
+            else:
+                continue
+
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        values.append(candidate)
+
+    return values
+
 
 def _has_english_text(
     labels: Mapping[str, str],
@@ -387,10 +445,15 @@ def infer_ner_types(
     labels: Mapping[str, str],
     aliases: Mapping[str, Sequence[str]],
     descriptions: Mapping[str, str],
+    claims: Mapping[str, Any] | None = None,
 ) -> tuple[list[str], list[str], str]:
     # Properties are deterministic relation-like symbols for retrieval typing.
     if entity_id.startswith("P"):
         return ["RELATION"], ["PROPERTY"], "lexical_v1"
+
+    p31_ids = set(_extract_claim_entity_ids(claims, "P31"))
+    if p31_ids & HUMAN_INSTANCE_OF_QIDS:
+        return ["PERSON"], ["HUMAN"], "claims_p31_human_v1"
 
     text_values = _iter_text_values(labels, aliases, descriptions)
     if not text_values:

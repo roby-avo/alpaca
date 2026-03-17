@@ -3,7 +3,7 @@
 ![alpaca logo](assets/alpaca-logo.png)
 
 Deterministic entity lookup over Wikidata-style data using:
-- PostgreSQL (entity store, search indexes, query cache, live demo sample cache)
+- PostgreSQL (entity store, triples store, query cache, live demo sample cache)
 - Elasticsearch (optional external index for integration experiments)
 - FastAPI (lookup API)
 - Adminer (optional UI for inspecting PostgreSQL data)
@@ -79,14 +79,20 @@ If running inside the API container (recommended with Docker Compose), put the d
 docker compose exec -T api python -m src.run_pipeline \
   --dump-path /mnt/input/latest-all.json.bz2 \
   --workers 8 \
-  --pass1-batch-size 5000 \
-  --context-batch-size 1000
+  --pass1-batch-size 5000
 ```
 
 What it does:
-1. Ingest dump entities into Postgres (`entities`)
-2. Build deterministic `context_string` from related entity labels (pass2)
-3. Build/refresh Postgres search indexes (`GIN` FTS + `pg_trgm`)
+1. Ingest dump entities into Postgres (`entities`) as the single intermediate storage table
+2. Store a pruned, context-oriented subset of entity-to-entity Wikidata triples in Postgres (`entity_triples`)
+3. Build `context_string` lazily from neighboring entity labels when lookup/export needs it
+4. Build/refresh lean Postgres support indexes (`label` / cross-ref / type + triples edge indexes)
+
+Default triple pruning keeps up to 12 edges per entity and up to 2 per predicate.
+Selection is scored for context usefulness: statement rank, predicate priors, and subject kind
+(for example people prefer occupation/citizenship over generic `instance of`, and locations
+prefer country/admin-area edges).
+Use `--max-entity-triples 0 --max-entity-triples-per-predicate 0` to keep all deduped edges.
 
 ## Live Demo Sample (Cached in Postgres)
 
@@ -115,8 +121,7 @@ This does:
 1. Start local services (`postgres`, `adminer`, `api`)
 2. Fetch live Wikidata seed entities into Postgres `sample_entity_cache`
 3. Optionally prefetch a capped one-hop support sample for context label resolution
-4. Build a compact Wikidata-style dump from the Postgres cache (seed entities only)
-5. Run the Postgres pipeline on the generated dump
+4. Run the Postgres pipeline directly from `sample_entity_cache` (no temporary dump is written)
 
 Useful live demo tuning (to avoid upstream throttling):
 - `--concurrency`
@@ -124,10 +129,28 @@ Useful live demo tuning (to avoid upstream throttling):
 - `--http-max-retries`
 - `--max-context-support-prefetch`
 
+Quick one-off NER typing check for a live entity:
+
+```bash
+python -m src.test_live_ner_type --qid Q42 --pretty
+```
+
+Quick one-off BOW check for cached QIDs:
+
+```bash
+./scripts/test_qid_bow.sh --ids Q42,Q90
+```
+
+This helper emits a single graph-derived `bow` built from `entity_triples` by resolving and tokenizing:
+- outgoing predicate labels
+- outgoing neighbor labels
+- incoming predicate labels
+- incoming neighbor labels
+
 ## Mirror PostgreSQL Entities to Elasticsearch
 
-Elasticsearch indexing reads directly from PostgreSQL `entities`, so it indexes
-whatever is currently in Postgres (live demo sample or full production ingest).
+Elasticsearch indexing reads directly from PostgreSQL `entities`, so the same
+single table used for parsing/intermediate storage is also the export source.
 
 Start required services first:
 
@@ -166,14 +189,14 @@ Local helper script (same module):
 ## PostgreSQL Search / Matching Logic
 
 Candidate retrieval uses PostgreSQL only:
-- Exact match over normalized `label`, `aliases`, and `cross_refs`
-- Fuzzy match over `label`, `aliases`, `context_string`, and `cross_refs`
+- Candidate generation from direct `label` / `labels[]` / `aliases[]` matching plus exact cross-ref matches
+- Reranking with lexical similarity over `label`, secondary names, and graph-neighborhood context
 - Type filtering via `coarse_type` / `fine_type`
 - Item category stored per row (`ENTITY`, `DISAMBIGUATION`, `TYPE`, `PREDICATE`, plus a few non-item fallbacks like `LEXEME`)
 - Prior-aware reranking (`prior` + context/type/name scores)
 - Optional LLM augmentation via `crosslink_hints` in lookup requests
 
-Internally the `entities` table stores search helper fields (normalized exact text, flattened arrays, and `tsvector`) and builds indexes via `/admin/reindex` or pipeline startup.
+Internally the `entities` table stores explicit multilingual `labels[]` and `aliases[]`, while `entity_triples` stores a pruned `(subject_qid, predicate_pid, object_qid)` edge set used to build compact neighbor-label context.
 
 ## Explore PostgreSQL Data (UI + Stats)
 
@@ -190,6 +213,8 @@ Entity / cache row counts:
 
 ```sql
 SELECT 'entities' AS table_name, count(*) AS rows FROM entities
+UNION ALL
+SELECT 'entity_triples', count(*) FROM entity_triples
 UNION ALL
 SELECT 'query_cache', count(*) FROM query_cache
 UNION ALL
@@ -236,12 +261,12 @@ FROM pg_stat_user_indexes s
 ORDER BY s.idx_scan DESC, pg_relation_size(s.indexrelid) DESC;
 ```
 
-Check search indexes on `entities`:
+Check support indexes on `entities` / `entity_triples`:
 
 ```sql
 SELECT indexname, indexdef
 FROM pg_indexes
-WHERE tablename = 'entities'
+WHERE tablename IN ('entities', 'entity_triples')
 ORDER BY indexname;
 ```
 
@@ -267,10 +292,10 @@ curl -s http://localhost:9200/<index_name>/_search \
 
 ## Storage Estimation (Sample + Replicate)
 
-For demonstrative sizing (without ingesting the full dump), use a small live sample to build proper `context_string`, then replicate the fully materialized `entities` rows into a separate simulation table.
+For demonstrative sizing (without ingesting the full dump), use a small live sample to build a realistic `entities` + `entity_triples` footprint, then replicate the `entities` rows into a separate simulation table.
 
 Suggested flow:
-1. Build a small but real sample (`sample_entity_cache` + pass1/pass2):
+1. Build a small but real sample (`sample_entity_cache` + pass1):
 ```bash
 ./scripts/run_live_sample_pipeline_docker.sh --count 500
 ```
@@ -279,12 +304,14 @@ Suggested flow:
 docker compose exec -T api python -m src.simulate_entities_size \
   --target-rows 5000000 \
   --seed-rows 500 \
+  --random-seed 1337 \
   --dest-table entities_size_sim
 ```
-3. Read the output projection (it prints current size and a linear projection to 100M rows by default).
+3. Read the output projection (it prints current entity-table size plus a linear `entity_triples` projection to 100M rows by default).
 
 Notes:
-- This preserves realistic row format after context has already been built.
+- Entities are estimated from deterministic random sampling with replacement from the selected seed rows.
+- `entity_triples` are projected linearly from the sampled entities/triples ratio and the sampled triples table bytes.
 - It is still an estimate: very small seeds can underestimate index size because text diversity is lower than full Wikidata.
 
 ## API Endpoints
@@ -335,5 +362,5 @@ docker compose exec postgres psql -U postgres -d alpaca -c "TRUNCATE TABLE sampl
 Reset indexed entities and query cache:
 
 ```bash
-docker compose exec postgres psql -U postgres -d alpaca -c "TRUNCATE TABLE entities, query_cache;"
+docker compose exec postgres psql -U postgres -d alpaca -c "TRUNCATE TABLE entity_triples, entities, query_cache;"
 ```

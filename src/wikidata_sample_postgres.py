@@ -591,7 +591,7 @@ def main() -> int:
         if support_errors or context_support_rate_limited:
             print(
                 "WARNING: Context-support prefetch was partial due to upstream limits/errors. "
-                "Pipeline can continue, but some context strings may be less complete on this run.",
+                "Pipeline can continue, but some lazily built graph context may be less complete on this run.",
                 file=sys.stderr,
             )
         if count_mode:

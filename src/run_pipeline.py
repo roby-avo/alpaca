@@ -4,8 +4,11 @@ import argparse
 import os
 import sys
 
+from .build_postgres_entities import (
+    DEFAULT_MAX_ENTITY_TRIPLES,
+    DEFAULT_MAX_ENTITY_TRIPLES_PER_PREDICATE,
+)
 from .build_postgres_entities import run_pass1 as run_postgres_pass1
-from .build_postgres_entities import run_pass2 as run_postgres_pass2
 from .common import (
     parse_language_allowlist,
     resolve_dump_path,
@@ -35,11 +38,24 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run the deterministic alpaca pipeline: dump -> Postgres entities (pass1) -> "
-            "Postgres deterministic context build (pass2) -> Postgres search indexes."
+            "Postgres triples ingest -> Postgres support indexes."
         )
     )
     parser.add_argument("--dump-path", help="Input dump path (.json/.json.gz/.json.bz2).")
     parser.add_argument("--postgres-dsn", help="Postgres DSN.")
+    parser.add_argument(
+        "--sample-cache-ids",
+        help="Comma-separated QIDs from Postgres sample_entity_cache (example: Q42,Q90,Q64).",
+    )
+    parser.add_argument(
+        "--sample-cache-ids-file",
+        help="Text file with one QID per line for Postgres sample_entity_cache.",
+    )
+    parser.add_argument(
+        "--sample-cache-count",
+        type=parse_positive_int,
+        help="Read the first N cached sample QIDs by numeric order from sample_entity_cache.",
+    )
 
     parser.add_argument(
         "--limit",
@@ -63,24 +79,13 @@ def parse_args() -> argparse.Namespace:
         help="Rows per Postgres upsert batch in pass1 (default: 5000).",
     )
     parser.add_argument(
-        "--context-batch-size",
-        type=parse_positive_int,
-        default=1000,
-        help="Entities per Postgres context batch in pass2 (default: 1000).",
-    )
-    parser.add_argument(
         "--workers",
         type=parse_positive_int,
         default=max(1, min(8, (os.cpu_count() or 1))),
-        help="Parallel worker count for pass1 transform and pass2 context build.",
+        help="Parallel worker count for pass1 transform.",
     )
 
     parser.add_argument("--skip-pass1", action="store_true", help="Skip Postgres pass1 ingestion.")
-    parser.add_argument(
-        "--skip-pass2",
-        action="store_true",
-        help="Skip Postgres pass2 deterministic context build.",
-    )
     parser.add_argument(
         "--disable-ner-classifier",
         action="store_true",
@@ -89,19 +94,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--languages",
         default="en",
-        help="Comma-separated language allowlist for labels/descriptions (default: en).",
+        help="Comma-separated language allowlist used for lexical typing inputs (default: en).",
     )
     parser.add_argument(
         "--max-aliases-per-language",
         type=parse_non_negative_int,
         default=8,
-        help="Max aliases stored per language (default: 8, 0 disables aliases).",
+        help="Max aliases per language used for lexical typing (default: 8).",
     )
     parser.add_argument(
-        "--max-context-object-ids",
+        "--max-entity-triples",
         type=parse_non_negative_int,
-        default=32,
-        help="Max claim object IDs retained per entity (default: 32).",
+        default=DEFAULT_MAX_ENTITY_TRIPLES,
+        help=(
+            "Per-entity cap for stored entity_triples after heuristic pruning "
+            f"(default: {DEFAULT_MAX_ENTITY_TRIPLES}, 0 keeps all)."
+        ),
+    )
+    parser.add_argument(
+        "--max-entity-triples-per-predicate",
+        type=parse_non_negative_int,
+        default=DEFAULT_MAX_ENTITY_TRIPLES_PER_PREDICATE,
+        help=(
+            "Per-predicate cap applied before the entity_triples cap "
+            f"(default: {DEFAULT_MAX_ENTITY_TRIPLES_PER_PREDICATE}, 0 keeps all)."
+        ),
     )
     return parser.parse_args()
 
@@ -109,9 +126,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        dump_path = resolve_dump_path(args.dump_path)
         postgres_dsn = resolve_postgres_dsn(args.postgres_dsn)
         language_allowlist = parse_language_allowlist(args.languages, arg_name="--languages")
+        sample_cache_selector_count = (
+            sum(1 for value in (args.sample_cache_ids, args.sample_cache_ids_file) if value)
+            + (1 if args.sample_cache_count is not None else 0)
+        )
+        dump_path = None if sample_cache_selector_count else resolve_dump_path(args.dump_path)
+        if sample_cache_selector_count and args.dump_path:
+            raise ValueError("Use either --dump-path or --sample-cache-* selectors, not both.")
 
         if not args.skip_pass1:
             pass1_status = run_postgres_pass1(
@@ -121,29 +144,22 @@ def main() -> int:
                 limit=args.limit,
                 language_allowlist=language_allowlist,
                 max_aliases_per_language=args.max_aliases_per_language,
-                max_context_object_ids=args.max_context_object_ids,
                 disable_ner_classifier=args.disable_ner_classifier,
+                max_entity_triples=args.max_entity_triples,
+                max_entity_triples_per_predicate=args.max_entity_triples_per_predicate,
+                sample_cache_ids=args.sample_cache_ids,
+                sample_cache_ids_file=args.sample_cache_ids_file,
+                sample_cache_count=args.sample_cache_count,
                 worker_count=args.workers,
-                # Standard pipeline runs pass2, which rebuilds search_vector after context enrichment.
-                build_search_vector=bool(args.skip_pass2),
                 expected_entity_total=(args.expected_entity_total or None),
             )
             if pass1_status != 0:
                 return pass1_status
 
-        if not args.skip_pass2:
-            pass2_status = run_postgres_pass2(
-                postgres_dsn=postgres_dsn,
-                batch_size=args.context_batch_size,
-                worker_count=args.workers,
-            )
-            if pass2_status != 0:
-                return pass2_status
-
         store = PostgresStore(postgres_dsn)
         store.ensure_schema()
         store.ensure_search_indexes()
-        # Finalize the default lean lookup layout (keeps entity_context_inputs for traceability).
+        # Finalize the default lean lookup layout while keeping the single-table entities layout intact.
         store.compact_table_for_lookup(
             "entities",
             drop_cross_refs_trgm_index=True,
@@ -152,7 +168,7 @@ def main() -> int:
             analyze=True,
         )
 
-        print("Pipeline completed successfully (Postgres-only search backend).")
+        print("Pipeline completed successfully (Postgres entities + triples ready for Elasticsearch export).")
         return 0
     except (FileNotFoundError, ValueError, PostgresStoreError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

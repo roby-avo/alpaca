@@ -498,7 +498,14 @@ def select_alias_map_languages(
 
 def extract_multilingual_payload(entity: Mapping[str, Any]) -> dict[str, Any]:
     labels = extract_value_map(entity.get("labels"))
-    aliases = extract_alias_map(entity.get("aliases"))
+    aliases = extract_alias_map(
+        entity.get("aliases"),
+        excluded_labels={
+            normalize_text(value)
+            for value in labels.values()
+            if isinstance(value, str) and normalize_text(value)
+        },
+    )
     descriptions = extract_value_map(entity.get("descriptions"))
 
     return {
@@ -526,10 +533,15 @@ def extract_value_map(raw_value_map: Any) -> dict[str, str]:
     return dict(sorted(extracted.items(), key=lambda pair: pair[0]))
 
 
-def extract_alias_map(raw_alias_map: Any) -> dict[str, list[str]]:
+def extract_alias_map(
+    raw_alias_map: Any,
+    *,
+    excluded_labels: set[str] | None = None,
+) -> dict[str, list[str]]:
     if not isinstance(raw_alias_map, Mapping):
         return {}
 
+    blocked = excluded_labels if excluded_labels is not None else set()
     extracted: dict[str, list[str]] = {}
     for language, aliases_payload in raw_alias_map.items():
         if not isinstance(language, str):
@@ -551,7 +563,7 @@ def extract_alias_map(raw_alias_map: Any) -> dict[str, list[str]]:
                 continue
 
             normalized_alias = normalize_text(alias_value)
-            if not normalized_alias or normalized_alias in seen:
+            if not normalized_alias or normalized_alias in seen or normalized_alias in blocked:
                 continue
 
             seen.add(normalized_alias)

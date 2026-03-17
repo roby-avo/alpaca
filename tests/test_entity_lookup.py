@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from src.entity_lookup import build_cache_key, normalize_context_inputs, rerank_candidates
+from src.entity_lookup import (
+    build_cache_key,
+    normalize_context_inputs,
+    normalize_exact_text,
+    rerank_candidates,
+)
 
 
 class EntityLookupTests(unittest.TestCase):
@@ -67,6 +72,33 @@ class EntityLookupTests(unittest.TestCase):
         self.assertEqual(ranked[0]["qid"], "Q1")
         self.assertGreater(ranked[0]["context_score"], ranked[1]["context_score"])
         self.assertGreater(ranked[0]["type_score"], ranked[1]["type_score"])
+
+    def test_rerank_exact_match_uses_labels_even_when_aliases_exist(self) -> None:
+        candidates = [
+            {
+                "qid": "Q1",
+                "label": "Cologne",
+                "labels": ["Köln"],
+                "aliases": ["Cologne city"],
+                "context_string": "",
+                "coarse_type": "LOCATION",
+                "fine_type": "CITY",
+                "popularity": 1.0,
+                "prior": 0.1,
+                "score": 0.1,
+            }
+        ]
+
+        ranked = rerank_candidates(
+            candidates,
+            mention_norm=normalize_exact_text("Köln"),
+            context_terms=[],
+            coarse_hints=[],
+            fine_hints=[],
+            exact_mode=True,
+            limit=1,
+        )
+        self.assertTrue(ranked[0]["exact_name_match"])
 
 
 if __name__ == "__main__":

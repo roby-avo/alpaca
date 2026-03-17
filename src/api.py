@@ -24,7 +24,10 @@ class LookupRequest(BaseModel):
 class LookupCandidate(BaseModel):
     qid: str
     label: str = ""
+    labels: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
+    description: str | None = None
+    types: list[str] = Field(default_factory=list)
     context_string: str = ""
     coarse_type: str = ""
     fine_type: str = ""
@@ -103,6 +106,10 @@ def healthz() -> dict[str, Any]:
 
 
 def _coerce_lookup_candidate(raw: Mapping[str, Any]) -> LookupCandidate:
+    raw_labels = raw.get("labels")
+    labels: list[str] = []
+    if isinstance(raw_labels, list):
+        labels = [value for value in raw_labels if isinstance(value, str)]
     raw_aliases = raw.get("aliases")
     aliases: list[str] = []
     if isinstance(raw_aliases, list):
@@ -116,13 +123,20 @@ def _coerce_lookup_candidate(raw: Mapping[str, Any]) -> LookupCandidate:
         raw_name_variants = raw.get("name_variants")
         if isinstance(raw_name_variants, list):
             aliases.extend([value for value in raw_name_variants if isinstance(value, str)])
-        labels = raw.get("labels")
-        if isinstance(labels, list):
-            aliases.extend([value for value in labels if isinstance(value, str)])
+        raw_labels_fallback = raw.get("labels")
+        if isinstance(raw_labels_fallback, list):
+            aliases.extend([value for value in raw_labels_fallback if isinstance(value, str)])
+    raw_types = raw.get("types")
+    types: list[str] = []
+    if isinstance(raw_types, list):
+        types = [value for value in raw_types if isinstance(value, str)]
     return LookupCandidate(
         qid=raw.get("qid") if isinstance(raw.get("qid"), str) else "",
         label=raw.get("label") if isinstance(raw.get("label"), str) else "",
+        labels=labels,
         aliases=aliases,
+        description=raw.get("description") if isinstance(raw.get("description"), str) else None,
+        types=types,
         context_string=raw.get("context_string") if isinstance(raw.get("context_string"), str) else "",
         coarse_type=raw.get("coarse_type") if isinstance(raw.get("coarse_type"), str) else "",
         fine_type=raw.get("fine_type") if isinstance(raw.get("fine_type"), str) else "",
