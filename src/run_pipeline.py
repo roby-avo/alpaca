@@ -15,6 +15,7 @@ from .common import (
     resolve_postgres_dsn,
 )
 from .postgres_store import PostgresStore, PostgresStoreError
+from .wikidata_stats import DEFAULT_TIMEOUT_SECONDS, resolve_expected_entity_total
 
 
 def parse_non_negative_int(raw: str) -> int:
@@ -70,6 +71,23 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Optional manual progress total override for pass1 (e.g., from Wikidata:Statistics). "
             "0 = auto sample from the local dump."
+        ),
+    )
+    parser.add_argument(
+        "--fetch-live-entity-total",
+        action="store_true",
+        help=(
+            "Fetch the current Wikidata item count from Wikidata:Statistics and use it as the "
+            "pass1 progress total."
+        ),
+    )
+    parser.add_argument(
+        "--live-entity-total-timeout-seconds",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=(
+            "HTTP timeout for --fetch-live-entity-total "
+            f"(default: {DEFAULT_TIMEOUT_SECONDS})."
         ),
     )
     parser.add_argument(
@@ -137,6 +155,12 @@ def main() -> int:
             raise ValueError("Use either --dump-path or --sample-cache-* selectors, not both.")
 
         if not args.skip_pass1:
+            expected_entity_total = resolve_expected_entity_total(
+                manual_total=(args.expected_entity_total or None),
+                fetch_live=args.fetch_live_entity_total,
+                timeout_seconds=args.live_entity_total_timeout_seconds,
+                log_stream=sys.stderr,
+            )
             pass1_status = run_postgres_pass1(
                 dump_path=dump_path,
                 postgres_dsn=postgres_dsn,
@@ -151,7 +175,7 @@ def main() -> int:
                 sample_cache_ids_file=args.sample_cache_ids_file,
                 sample_cache_count=args.sample_cache_count,
                 worker_count=args.workers,
-                expected_entity_total=(args.expected_entity_total or None),
+                expected_entity_total=expected_entity_total,
             )
             if pass1_status != 0:
                 return pass1_status

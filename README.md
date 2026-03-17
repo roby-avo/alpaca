@@ -70,7 +70,10 @@ the REST query tools directly instead of carrying a full Kibana setup.
 Run the PostgreSQL pipeline on a local Wikidata dump:
 
 ```bash
-python3 -m src.run_pipeline --dump-path /absolute/path/latest-all.json.bz2 --workers 8
+python3 -m src.run_pipeline \
+  --dump-path /absolute/path/latest-all.json.bz2 \
+  --fetch-live-entity-total \
+  --workers 8
 ```
 
 If running inside the API container (recommended with Docker Compose), put the dump under `./data/input` and use `/mnt/input/...`:
@@ -78,9 +81,14 @@ If running inside the API container (recommended with Docker Compose), put the d
 ```bash
 docker compose exec -T api python -m src.run_pipeline \
   --dump-path /mnt/input/latest-all.json.bz2 \
+  --fetch-live-entity-total \
   --workers 8 \
   --pass1-batch-size 5000
 ```
+
+Use `--fetch-live-entity-total` for a production/full-dump run when you want the
+progress bar to track the current Wikidata item count from `Wikidata:Statistics`
+instead of a local compressed-size estimate.
 
 What it does:
 1. Ingest dump entities into Postgres (`entities`) as the single intermediate storage table
