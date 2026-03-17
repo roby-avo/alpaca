@@ -36,6 +36,7 @@ from .postgres_store import (
     build_entity_context_string,
 )
 from .wikidata_sample_ids import resolve_qids
+from .wikidata_stats import DEFAULT_TIMEOUT_SECONDS, resolve_expected_entity_total
 PRIMARY_LABEL_LANGUAGE_PREFERENCE = ("en", "mul")
 NON_ARTICLE_WIKIPEDIA_SITES = frozenset(
     {
@@ -1060,6 +1061,23 @@ def parse_args() -> argparse.Namespace:
             "0 = auto sample from the local dump."
         ),
     )
+    parser.add_argument(
+        "--fetch-live-entity-total",
+        action="store_true",
+        help=(
+            "Fetch the current Wikidata item count from Wikidata:Statistics and use it as the "
+            "pass1 progress total."
+        ),
+    )
+    parser.add_argument(
+        "--live-entity-total-timeout-seconds",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=(
+            "HTTP timeout for --fetch-live-entity-total "
+            f"(default: {DEFAULT_TIMEOUT_SECONDS})."
+        ),
+    )
     parser.add_argument("--workers", type=parse_positive_int, default=max(1, min(8, (os.cpu_count() or 1))))
     parser.add_argument(
         "--languages",
@@ -1121,6 +1139,12 @@ def main() -> int:
         elif args.dump_path:
             raise ValueError("Use either --dump-path or --sample-cache-* selectors, not both.")
         language_allowlist = parse_language_allowlist(args.languages, arg_name="--languages")
+        expected_entity_total = resolve_expected_entity_total(
+            manual_total=(args.expected_entity_total or None),
+            fetch_live=args.fetch_live_entity_total,
+            timeout_seconds=args.live_entity_total_timeout_seconds,
+            log_stream=sys.stderr,
+        )
         return run_pass1(
             dump_path=dump_path,
             postgres_dsn=postgres_dsn,
@@ -1135,7 +1159,7 @@ def main() -> int:
             sample_cache_ids_file=args.sample_cache_ids_file,
             sample_cache_count=args.sample_cache_count,
             worker_count=args.workers,
-            expected_entity_total=(args.expected_entity_total or None),
+            expected_entity_total=expected_entity_total,
         )
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
