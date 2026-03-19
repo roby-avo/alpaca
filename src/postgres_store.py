@@ -63,6 +63,12 @@ _SIM_SAMPLE_MULTIPLIER = 1_103_515_245
 _SIM_SAMPLE_SEED_MULTIPLIER = 97_531
 _SIM_SAMPLE_INCREMENT = 12_345
 _SIM_SAMPLE_MODULUS = 2_147_483_647
+_LEGACY_ENTITY_TRIPLES_INDEX_NAMES = (
+    "idx_entity_triples_subject_qid",
+    "idx_entity_triples_object_qid",
+    "idx_entity_triples_predicate_pid",
+)
+_ENTITY_TRIPLES_INCOMING_INDEX_NAME = "idx_entity_triples_object_qid_predicate_pid_subject_qid"
 
 
 def entity_name_payload_table_name(base_table_name: str) -> str:
@@ -88,6 +94,24 @@ def _quote_identifier(name: str) -> str:
             f"Invalid SQL identifier '{name}'. Use letters, digits, and underscores only."
         )
     return f'"{stripped}"'
+
+
+def _entity_triples_index_drop_statements() -> list[str]:
+    return [
+        f"DROP INDEX IF EXISTS {_quote_identifier(index_name)};"
+        for index_name in _LEGACY_ENTITY_TRIPLES_INDEX_NAMES
+    ]
+
+
+def _entity_triples_index_create_statements() -> list[str]:
+    # The entity_triples primary key already covers subject-first outgoing scans.
+    # Incoming-edge queries need the reverse leading key on object_qid.
+    return [
+        (
+            f"CREATE INDEX IF NOT EXISTS {_quote_identifier(_ENTITY_TRIPLES_INCOMING_INDEX_NAME)} "
+            "ON entity_triples (object_qid, predicate_pid, subject_qid);"
+        ),
+    ]
 
 
 def sampled_seed_row_number(*, sample_no: int, seed_count: int, random_seed: int) -> int:
@@ -815,13 +839,7 @@ class PostgresStore:
             f"DROP INDEX IF EXISTS {_quote_identifier(f'{index_prefix}_item_category')};",
         ]
         if table_name == "entities":
-            drop_parts.extend(
-                [
-                    "DROP INDEX IF EXISTS idx_entity_triples_subject_qid;",
-                    "DROP INDEX IF EXISTS idx_entity_triples_object_qid;",
-                    "DROP INDEX IF EXISTS idx_entity_triples_predicate_pid;",
-                ]
-            )
+            drop_parts.extend(_entity_triples_index_drop_statements())
 
         ddl_parts = [f"""
         CREATE INDEX IF NOT EXISTS {index_prefix}_coarse_type ON {table_ident} (coarse_type);
@@ -833,6 +851,8 @@ class PostgresStore:
         CREATE INDEX IF NOT EXISTS {index_prefix}_dbpedia_url ON {table_ident} (dbpedia_url)
         WHERE COALESCE(dbpedia_url, '') <> '';
         """]
+        if table_name == "entities":
+            ddl_parts.extend(_entity_triples_index_create_statements())
         ddl = "\n".join([*drop_parts, *ddl_parts])
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -1881,9 +1901,7 @@ class PostgresStore:
         index_drops.append(f"idx_{table_name}_cross_refs_exact")
         index_drops.append(f"idx_{table_name}_item_category")
         if table_name == "entities":
-            index_drops.append("idx_entity_triples_subject_qid")
-            index_drops.append("idx_entity_triples_object_qid")
-            index_drops.append("idx_entity_triples_predicate_pid")
+            index_drops.extend(_LEGACY_ENTITY_TRIPLES_INDEX_NAMES)
         dropped_tables: list[str] = []
 
         with self._connect() as conn:

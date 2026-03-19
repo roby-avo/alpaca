@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from src.postgres_store import (
+    _entity_triples_index_create_statements,
+    _entity_triples_index_drop_statements,
     _entity_search_columns,
     _expand_dbpedia_ref,
     _expand_wikipedia_ref,
@@ -36,6 +38,29 @@ class PostgresStoreHelpersTests(unittest.TestCase):
         self.assertEqual(dbpedia, "it.dbpedia.org|Roma")
         self.assertEqual(_expand_wikipedia_ref(wikipedia), "https://it.wikipedia.org/wiki/Roma")
         self.assertEqual(_expand_dbpedia_ref(dbpedia), "https://it.dbpedia.org/resource/Roma")
+
+    def test_entity_triples_indexes_add_incoming_edge_covering_index(self) -> None:
+        create_statements = _entity_triples_index_create_statements()
+        self.assertEqual(len(create_statements), 1)
+        self.assertIn(
+            "idx_entity_triples_object_qid_predicate_pid_subject_qid",
+            create_statements[0],
+        )
+        self.assertIn(
+            "ON entity_triples (object_qid, predicate_pid, subject_qid)",
+            create_statements[0],
+        )
+
+    def test_entity_triples_index_drop_statements_only_remove_legacy_indexes(self) -> None:
+        drop_statements = _entity_triples_index_drop_statements()
+        self.assertEqual(
+            drop_statements,
+            [
+                'DROP INDEX IF EXISTS "idx_entity_triples_subject_qid";',
+                'DROP INDEX IF EXISTS "idx_entity_triples_object_qid";',
+                'DROP INDEX IF EXISTS "idx_entity_triples_predicate_pid";',
+            ],
+        )
 
 
 if __name__ == "__main__":

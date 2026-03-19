@@ -94,7 +94,7 @@ What it does:
 1. Ingest dump entities into Postgres (`entities`) as the single intermediate storage table
 2. Store a pruned, context-oriented subset of entity-to-entity Wikidata triples in Postgres (`entity_triples`)
 3. Build `context_string` lazily from neighboring entity labels when lookup/export needs it
-4. Build/refresh lean Postgres support indexes (`label` / cross-ref / type + triples edge indexes)
+4. Build/refresh lean Postgres support indexes (`label` / cross-ref / type + incoming triples index on `entity_triples(object_qid, predicate_pid, subject_qid)`)
 
 Default triple pruning keeps up to 12 edges per entity and up to 2 per predicate.
 Selection is scored for context usefulness: statement rank, predicate priors, and subject kind
