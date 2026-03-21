@@ -12,7 +12,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .common import resolve_configured_str, resolve_postgres_dsn, tqdm
+from .common import resolve_configured_str, resolve_postgres_dsn, running_in_container, tqdm
 from .postgres_store import PostgresStore
 try:  # pragma: no cover - import depends on runtime environment
     import psycopg  # type: ignore
@@ -21,7 +21,8 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 ELASTICSEARCH_URL_ENV = "ALPACA_ELASTICSEARCH_URL"
-DEFAULT_ELASTICSEARCH_URL = "http://localhost:9200"
+DEFAULT_ELASTICSEARCH_URL_LOCAL = "http://localhost:9200"
+DEFAULT_ELASTICSEARCH_URL_DOCKER = "http://elasticsearch:9200"
 DEFAULT_INDEX_NAME = "alpaca-entities"
 DEFAULT_TABLE_NAME = "entities"
 DEFAULT_FETCH_SIZE = 10_000
@@ -42,6 +43,12 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 class ElasticsearchIndexingError(RuntimeError):
     pass
+
+
+def default_elasticsearch_url() -> str:
+    if running_in_container():
+        return DEFAULT_ELASTICSEARCH_URL_DOCKER
+    return DEFAULT_ELASTICSEARCH_URL_LOCAL
 
 
 def parse_positive_int(raw: str) -> int:
@@ -122,7 +129,8 @@ def parse_args() -> argparse.Namespace:
         "--elasticsearch-url",
         help=(
             "Elasticsearch base URL (defaults to ALPACA_ELASTICSEARCH_URL or "
-            f"{DEFAULT_ELASTICSEARCH_URL})."
+            f"{DEFAULT_ELASTICSEARCH_URL_DOCKER} inside containers / "
+            f"{DEFAULT_ELASTICSEARCH_URL_LOCAL} outside containers)."
         ),
     )
     parser.add_argument(
@@ -899,7 +907,7 @@ def _run(args: argparse.Namespace) -> int:
         resolve_configured_str(
             args.elasticsearch_url,
             ELASTICSEARCH_URL_ENV,
-            DEFAULT_ELASTICSEARCH_URL,
+            default_elasticsearch_url(),
         )
     )
     index_name = args.index_name.strip()

@@ -21,7 +21,8 @@ DEFAULT_DUMP_PRIMARY = Path("/downloads/latest-all.json.bz2")
 DEFAULT_DUMP_SECONDARY = Path("./data/input/latest-all.json.bz2")
 DEFAULT_LABELS_DB_PATH = Path("./data/output/wikidata_labels.sqlite")
 DEFAULT_BOW_OUTPUT_PATH = Path("./data/output/bow_docs.jsonl.gz")
-DEFAULT_POSTGRES_DSN = "postgresql://postgres@localhost:5432/alpaca"
+DEFAULT_POSTGRES_DSN_LOCAL = "postgresql://postgres@localhost:5432/alpaca"
+DEFAULT_POSTGRES_DSN_DOCKER = "postgresql://postgres@postgres:5432/alpaca"
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
@@ -131,8 +132,18 @@ def resolve_ner_types_path(cli_value: str | None) -> Path | None:
     return resolve_optional_path(cli_value, NER_TYPES_PATH_ENV)
 
 
+def running_in_container() -> bool:
+    return os.path.exists("/.dockerenv")
+
+
+def default_postgres_dsn() -> str:
+    if running_in_container():
+        return DEFAULT_POSTGRES_DSN_DOCKER
+    return DEFAULT_POSTGRES_DSN_LOCAL
+
+
 def resolve_postgres_dsn(cli_value: str | None) -> str:
-    return resolve_configured_str(cli_value, POSTGRES_DSN_ENV, DEFAULT_POSTGRES_DSN)
+    return resolve_configured_str(cli_value, POSTGRES_DSN_ENV, default_postgres_dsn())
 
 
 def resolve_configured_path(
