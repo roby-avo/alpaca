@@ -184,6 +184,11 @@ docker compose exec api python -m src.index_postgres_to_elasticsearch \
   --skip-count-total
 ```
 
+Inside the `api` container, the default endpoints are the Docker Compose service
+names:
+- PostgreSQL: `postgresql://postgres@postgres:5432/alpaca`
+- Elasticsearch: `http://elasticsearch:9200`
+
 Incremental sync (only rows updated after a timestamp):
 
 ```bash
@@ -202,6 +207,10 @@ Local helper script (same module):
 ```bash
 ./scripts/run_postgres_to_elasticsearch.sh --index-name alpaca-entities --recreate-index --skip-count-total
 ```
+
+The helper starts `postgres`, `elasticsearch`, and `api`, then runs the indexer
+inside the `api` container on the Docker Compose network with explicit
+Compose-network endpoints for Postgres and Elasticsearch.
 
 ## PostgreSQL Search / Matching Logic
 
