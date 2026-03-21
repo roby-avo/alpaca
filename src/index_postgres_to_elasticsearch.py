@@ -236,6 +236,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--exact-count-total",
+        action="store_true",
+        help=(
+            "Use exact COUNT(*) for the progress bar total instead of a fast estimate. "
+            "This can be much slower on large tables."
+        ),
+    )
+    parser.add_argument(
         "--wait-index-ready-timeout-seconds",
         type=parse_positive_float,
         default=DEFAULT_WAIT_INDEX_READY_TIMEOUT_SECONDS,
@@ -736,7 +744,77 @@ def _iter_documents_from_postgres(
                         yield docs
 
 
-def _count_source_rows(
+def _prefer_estimated_row_total(*values: Any) -> int | None:
+    candidates: list[int] = []
+    for raw in values:
+        if not isinstance(raw, (int, float)):
+            continue
+        value = int(raw)
+        if value <= 0:
+            continue
+        candidates.append(value)
+    if not candidates:
+        return None
+    return max(candidates)
+
+
+def _extract_explain_plan_rows(raw: Any) -> int | None:
+    parsed = raw
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(parsed, list) or not parsed:
+        return None
+    first = parsed[0]
+    if not isinstance(first, Mapping):
+        return None
+    plan = first.get("Plan")
+    if not isinstance(plan, Mapping):
+        return None
+    return _prefer_estimated_row_total(plan.get("Plan Rows"))
+
+
+def _estimate_source_rows(
+    *,
+    postgres_dsn: str,
+    table_name: str,
+    updated_since: str | None,
+) -> int | None:
+    pg = _require_psycopg()
+    table_sql = _quote_table_name(table_name)
+    with pg.connect(postgres_dsn) as conn:
+        with conn.cursor() as cur:
+            if updated_since is None:
+                cur.execute(
+                    """
+                    SELECT c.reltuples, s.n_live_tup
+                    FROM pg_class AS c
+                    LEFT JOIN pg_stat_all_tables AS s ON s.relid = c.oid
+                    WHERE c.oid = to_regclass(%s)
+                    """,
+                    (table_name,),
+                )
+                stats_row = cur.fetchone()
+                if stats_row:
+                    estimate = _prefer_estimated_row_total(stats_row[0], stats_row[1])
+                    if estimate is not None:
+                        return estimate
+
+            where_sql = ""
+            params: list[Any] = []
+            if updated_since:
+                where_sql = "WHERE updated_at >= %s::timestamptz"
+                params.append(updated_since)
+            cur.execute(f"EXPLAIN (FORMAT JSON) SELECT 1 FROM {table_sql} {where_sql}", tuple(params))
+            row = cur.fetchone()
+    if not row:
+        return None
+    return _extract_explain_plan_rows(row[0])
+
+
+def _count_source_rows_exact(
     *,
     postgres_dsn: str,
     table_name: str,
@@ -935,13 +1013,31 @@ def _run(args: argparse.Namespace) -> int:
 
     total_rows: int | None = None
     if not args.skip_count_total:
-        print("Counting source rows for progress bar...")
-        total_rows = _count_source_rows(
-            postgres_dsn=postgres_dsn,
-            table_name=table_name,
-            updated_since=args.updated_since,
-        )
-        print(f"Source rows to index: {total_rows}")
+        if args.exact_count_total:
+            print("Counting source rows exactly for progress bar...")
+            total_rows = _count_source_rows_exact(
+                postgres_dsn=postgres_dsn,
+                table_name=table_name,
+                updated_since=args.updated_since,
+            )
+            print(f"Source rows to index: {total_rows} (exact)")
+        else:
+            print("Estimating source rows for progress bar from PostgreSQL statistics...")
+            total_rows = _estimate_source_rows(
+                postgres_dsn=postgres_dsn,
+                table_name=table_name,
+                updated_since=args.updated_since,
+            )
+            if total_rows is None:
+                print("Fast estimate unavailable. Falling back to exact COUNT(*)...")
+                total_rows = _count_source_rows_exact(
+                    postgres_dsn=postgres_dsn,
+                    table_name=table_name,
+                    updated_since=args.updated_since,
+                )
+                print(f"Source rows to index: {total_rows} (exact fallback)")
+            else:
+                print(f"Source rows to index: ~{total_rows} (estimated)")
 
     max_inflight = int(args.max_inflight) if int(args.max_inflight) > 0 else int(args.workers) * 3
     docs_read = 0

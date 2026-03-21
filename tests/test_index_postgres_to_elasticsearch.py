@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
-from src.index_postgres_to_elasticsearch import _build_index_payload, _row_to_document
+from src.index_postgres_to_elasticsearch import (
+    _build_index_payload,
+    _extract_explain_plan_rows,
+    _prefer_estimated_row_total,
+    _row_to_document,
+)
 
 
 class IndexPostgresToElasticsearchTests(unittest.TestCase):
@@ -56,6 +61,17 @@ class IndexPostgresToElasticsearchTests(unittest.TestCase):
             {"type": "keyword", "index": False, "doc_values": False},
         )
         self.assertNotIn("search_text", properties)
+
+    def test_prefer_estimated_row_total_uses_largest_positive_candidate(self) -> None:
+        self.assertEqual(_prefer_estimated_row_total(-1, 0, 123.4, 120), 123)
+        self.assertIsNone(_prefer_estimated_row_total(None, 0, -5))
+
+    def test_extract_explain_plan_rows_parses_json_plan(self) -> None:
+        self.assertEqual(
+            _extract_explain_plan_rows([{"Plan": {"Node Type": "Seq Scan", "Plan Rows": 98765}}]),
+            98765,
+        )
+        self.assertIsNone(_extract_explain_plan_rows([{"Plan": {}}]))
 
 
 if __name__ == "__main__":

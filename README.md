@@ -180,8 +180,7 @@ docker compose exec api python -m src.index_postgres_to_elasticsearch \
   --recreate-index \
   --workers 4 \
   --batch-size 10000 \
-  --bulk-actions 2000 \
-  --skip-count-total
+  --bulk-actions 2000
 ```
 
 Inside the `api` container, the default endpoints are the Docker Compose service
@@ -199,13 +198,15 @@ docker compose exec api python -m src.index_postgres_to_elasticsearch \
 
 Note: use `docker compose exec` (without `-T`) to keep TTY enabled so `tqdm`
 renders the live progress bar.
-For a full 100M+ row mirror, `--skip-count-total` is recommended so indexing
-starts immediately instead of paying for an upfront `COUNT(*)`.
+By default the progress bar total now uses a fast PostgreSQL estimate instead of
+`COUNT(*)`, so large full-table mirrors keep a useful total without the long
+startup delay. Use `--exact-count-total` only if you explicitly need an exact
+row count first.
 
 Local helper script (same module):
 
 ```bash
-./scripts/run_postgres_to_elasticsearch.sh --index-name alpaca-entities --recreate-index --skip-count-total
+./scripts/run_postgres_to_elasticsearch.sh --index-name alpaca-entities --recreate-index
 ```
 
 The helper starts `postgres`, `elasticsearch`, and `api`, then runs the indexer
