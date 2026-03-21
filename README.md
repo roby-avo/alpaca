@@ -160,6 +160,12 @@ This helper emits a single graph-derived `bow` built from `entity_triples` by re
 Elasticsearch indexing reads directly from PostgreSQL `entities`, so the same
 single table used for parsing/intermediate storage is also the export source.
 
+The production Elasticsearch mapping is intentionally lean:
+- indexed text stays focused on `label`, secondary `labels`, `aliases`, and compact triples-backed `context_string`
+- `description`, `types`, `wikipedia_url`, and `dbpedia_url` are still returned in `_source`, but are not indexed
+- secondary names are clipped before export (defaults: `--max-indexed-labels 12`, `--max-indexed-aliases 24`)
+- graph context is clipped before export (default: `--max-context-chars 256`)
+
 Start required services first:
 
 ```bash
@@ -174,7 +180,8 @@ docker compose exec api python -m src.index_postgres_to_elasticsearch \
   --recreate-index \
   --workers 4 \
   --batch-size 10000 \
-  --bulk-actions 2000
+  --bulk-actions 2000 \
+  --skip-count-total
 ```
 
 Incremental sync (only rows updated after a timestamp):
@@ -187,11 +194,13 @@ docker compose exec api python -m src.index_postgres_to_elasticsearch \
 
 Note: use `docker compose exec` (without `-T`) to keep TTY enabled so `tqdm`
 renders the live progress bar.
+For a full 100M+ row mirror, `--skip-count-total` is recommended so indexing
+starts immediately instead of paying for an upfront `COUNT(*)`.
 
 Local helper script (same module):
 
 ```bash
-./scripts/run_postgres_to_elasticsearch.sh --index-name alpaca-entities --recreate-index
+./scripts/run_postgres_to_elasticsearch.sh --index-name alpaca-entities --recreate-index --skip-count-total
 ```
 
 ## PostgreSQL Search / Matching Logic

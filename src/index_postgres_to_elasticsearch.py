@@ -33,6 +33,9 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 90.0
 DEFAULT_FINAL_REFRESH_INTERVAL = "1s"
 DEFAULT_FINAL_REPLICAS = 0
 DEFAULT_WAIT_INDEX_READY_TIMEOUT_SECONDS = 180.0
+DEFAULT_MAX_INDEXED_LABELS = 12
+DEFAULT_MAX_INDEXED_ALIASES = 24
+DEFAULT_MAX_CONTEXT_CHARS = 256
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -233,6 +236,33 @@ def parse_args() -> argparse.Namespace:
             f"starting bulk indexing (default: {DEFAULT_WAIT_INDEX_READY_TIMEOUT_SECONDS})."
         ),
     )
+    parser.add_argument(
+        "--max-indexed-labels",
+        type=parse_non_negative_int,
+        default=DEFAULT_MAX_INDEXED_LABELS,
+        help=(
+            "Maximum secondary labels mirrored into Elasticsearch per document. "
+            f"0 disables them (default: {DEFAULT_MAX_INDEXED_LABELS})."
+        ),
+    )
+    parser.add_argument(
+        "--max-indexed-aliases",
+        type=parse_non_negative_int,
+        default=DEFAULT_MAX_INDEXED_ALIASES,
+        help=(
+            "Maximum aliases mirrored into Elasticsearch per document. "
+            f"0 disables them (default: {DEFAULT_MAX_INDEXED_ALIASES})."
+        ),
+    )
+    parser.add_argument(
+        "--max-context-chars",
+        type=parse_non_negative_int,
+        default=DEFAULT_MAX_CONTEXT_CHARS,
+        help=(
+            "Maximum graph-derived context characters stored per document. "
+            f"0 disables context_string (default: {DEFAULT_MAX_CONTEXT_CHARS})."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -303,7 +333,15 @@ def _build_index_payload() -> dict[str, Any]:
             "number_of_shards": 1,
             "number_of_replicas": 0,
             "refresh_interval": "-1",
+            "codec": "best_compression",
             "analysis": {
+                "filter": {
+                    "alpaca_edge_2_20": {
+                        "type": "edge_ngram",
+                        "min_gram": 2,
+                        "max_gram": 20,
+                    }
+                },
                 "normalizer": {
                     "alpaca_keyword_lower": {
                         "type": "custom",
@@ -315,47 +353,70 @@ def _build_index_payload() -> dict[str, Any]:
                         "type": "custom",
                         "tokenizer": "standard",
                         "filter": ["lowercase", "asciifolding"],
-                    }
+                    },
+                    "alpaca_prefix_index": {
+                        "type": "custom",
+                        "tokenizer": "standard",
+                        "filter": ["lowercase", "asciifolding", "alpaca_edge_2_20"],
+                    },
+                    "alpaca_prefix_search": {
+                        "type": "custom",
+                        "tokenizer": "standard",
+                        "filter": ["lowercase", "asciifolding"],
+                    },
                 },
             },
         },
         "mappings": {
             "dynamic": "strict",
             "properties": {
-                "qid": {"type": "keyword"},
+                "qid": {"type": "keyword", "index": False, "doc_values": False},
                 "label": {
                     "type": "text",
                     "analyzer": "alpaca_text",
-                    "copy_to": ["search_text"],
                     "fields": {
                         "keyword": {
                             "type": "keyword",
                             "normalizer": "alpaca_keyword_lower",
+                            "ignore_above": 512,
+                        },
+                        "prefix": {
+                            "type": "text",
+                            "analyzer": "alpaca_prefix_index",
+                            "search_analyzer": "alpaca_prefix_search",
+                            "norms": False,
                         }
                     },
                 },
                 "labels": {
                     "type": "text",
                     "analyzer": "alpaca_text",
-                    "copy_to": ["search_text"],
+                    "fields": {
+                        "prefix": {
+                            "type": "text",
+                            "analyzer": "alpaca_prefix_index",
+                            "search_analyzer": "alpaca_prefix_search",
+                            "norms": False,
+                        }
+                    },
                 },
-                "description": {
-                    "type": "text",
-                    "analyzer": "alpaca_text",
-                },
+                "description": {"type": "text", "index": False},
                 "aliases": {
                     "type": "text",
                     "analyzer": "alpaca_text",
-                    "copy_to": ["search_text"],
+                    "fields": {
+                        "prefix": {
+                            "type": "text",
+                            "analyzer": "alpaca_prefix_index",
+                            "search_analyzer": "alpaca_prefix_search",
+                            "norms": False,
+                        }
+                    },
                 },
                 "context_string": {
                     "type": "text",
                     "analyzer": "alpaca_text",
-                    "copy_to": ["search_text"],
-                },
-                "search_text": {
-                    "type": "text",
-                    "analyzer": "alpaca_text",
+                    "norms": False,
                 },
                 "coarse_type": {
                     "type": "keyword",
@@ -371,18 +432,21 @@ def _build_index_payload() -> dict[str, Any]:
                 },
                 "types": {
                     "type": "keyword",
-                    "ignore_above": 256,
+                    "index": False,
+                    "doc_values": False,
                 },
                 "popularity": {"type": "float"},
-                "prior": {"type": "float"},
+                "prior": {"type": "half_float"},
                 # Compact refs from Postgres, without full URL prefixes.
                 "wikipedia_url": {
                     "type": "keyword",
-                    "ignore_above": 2048,
+                    "index": False,
+                    "doc_values": False,
                 },
                 "dbpedia_url": {
                     "type": "keyword",
-                    "ignore_above": 2048,
+                    "index": False,
+                    "doc_values": False,
                 },
                 "updated_at": {"type": "date"},
             },
@@ -502,19 +566,27 @@ def _finalize_index(
     )
 
 
-def _clean_terms(raw: Any) -> list[str]:
+def _clean_terms(
+    raw: Any,
+    *,
+    max_terms: int | None = None,
+    excluded: set[str] | None = None,
+) -> list[str]:
     if not isinstance(raw, list):
         return []
     out: list[str] = []
     seen: set[str] = set()
+    blocked = excluded if excluded is not None else set()
     for value in raw:
         if not isinstance(value, str):
             continue
         cleaned = value.strip()
-        if not cleaned or cleaned in seen:
+        if not cleaned or cleaned in seen or cleaned in blocked:
             continue
         seen.add(cleaned)
         out.append(cleaned)
+        if max_terms is not None and len(out) >= max_terms:
+            break
     return out
 
 
@@ -532,22 +604,38 @@ def _as_iso_datetime(raw: Any) -> str:
     return ""
 
 
-def _row_to_document(row: Sequence[Any]) -> dict[str, Any] | None:
+def _row_to_document(
+    row: Sequence[Any],
+    *,
+    max_indexed_labels: int = DEFAULT_MAX_INDEXED_LABELS,
+    max_indexed_aliases: int = DEFAULT_MAX_INDEXED_ALIASES,
+) -> dict[str, Any] | None:
     if len(row) < 14:
         return None
     qid = row[0]
     label = row[1]
     if not isinstance(qid, str) or not isinstance(label, str):
         return None
-    labels = _clean_terms(row[2])
-    aliases = _clean_terms(row[3])
+    clean_label = label.strip()
+    if not clean_label:
+        return None
+    labels = _clean_terms(
+        row[2],
+        max_terms=max_indexed_labels,
+        excluded={clean_label},
+    )
+    aliases = _clean_terms(
+        row[3],
+        max_terms=max_indexed_aliases,
+        excluded={clean_label, *labels},
+    )
     has_context_column = len(row) >= 15
     shift = 1 if has_context_column else 0
     context_string = row[6] if has_context_column and isinstance(row[6], str) else ""
 
     doc: dict[str, Any] = {
         "qid": qid,
-        "label": label,
+        "label": clean_label,
         "labels": labels,
         "aliases": aliases,
         "types": _clean_terms(row[5]),
@@ -576,6 +664,9 @@ def _iter_documents_from_postgres(
     table_name: str,
     batch_size: int,
     updated_since: str | None,
+    max_indexed_labels: int,
+    max_indexed_aliases: int,
+    max_context_chars: int,
 ) -> Iterator[list[dict[str, Any]]]:
     pg = _require_psycopg()
     table_sql = _quote_table_name(table_name)
@@ -619,7 +710,11 @@ def _iter_documents_from_postgres(
                     return
                 docs: list[dict[str, Any]] = []
                 for row in rows:
-                    doc = _row_to_document(row)
+                    doc = _row_to_document(
+                        row,
+                        max_indexed_labels=max_indexed_labels,
+                        max_indexed_aliases=max_indexed_aliases,
+                    )
                     if doc:
                         docs.append(doc)
                 if docs:
@@ -627,6 +722,7 @@ def _iter_documents_from_postgres(
                         yield context_store.attach_context_strings(
                             docs,
                             chunk_size=min(2000, max(1, batch_size)),
+                            max_chars=max_context_chars,
                         )
                     else:
                         yield docs
@@ -854,6 +950,9 @@ def _run(args: argparse.Namespace) -> int:
         f"workers={args.workers}",
         f"max_inflight={max_inflight}",
         f"updated_since={args.updated_since or 'n/a'}",
+        f"max_indexed_labels={args.max_indexed_labels}",
+        f"max_indexed_aliases={args.max_indexed_aliases}",
+        f"max_context_chars={args.max_context_chars}",
     )
     print(
         "Waiting for Elasticsearch index shard to become active:",
@@ -874,6 +973,9 @@ def _run(args: argparse.Namespace) -> int:
                 table_name=table_name,
                 batch_size=int(args.batch_size),
                 updated_since=args.updated_since,
+                max_indexed_labels=int(args.max_indexed_labels),
+                max_indexed_aliases=int(args.max_indexed_aliases),
+                max_context_chars=int(args.max_context_chars),
             ):
                 docs_read += len(batch_docs)
                 progress.set_postfix(
