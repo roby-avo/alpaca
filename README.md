@@ -165,6 +165,7 @@ The production Elasticsearch mapping is intentionally lean:
 - `description`, `types`, `wikipedia_url`, and `dbpedia_url` are still returned in `_source`, but are not indexed
 - secondary names are clipped before export (defaults: `--max-indexed-labels 12`, `--max-indexed-aliases 24`)
 - graph context is clipped before export (default: `--max-context-chars 256`)
+- graph context hydration reuses one dedicated Postgres connection and caches neighbor labels across chunks to keep long exports moving
 
 Start required services first:
 

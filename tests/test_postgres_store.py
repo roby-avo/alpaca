@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.postgres_store import (
+    PostgresStore,
     _entity_triples_index_create_statements,
     _entity_triples_index_drop_statements,
     _entity_search_columns,
@@ -13,6 +14,15 @@ from src.postgres_store import (
 
 
 class PostgresStoreHelpersTests(unittest.TestCase):
+    def test_label_cache_eviction_stays_bounded(self) -> None:
+        store = PostgresStore("postgresql://postgres@localhost:5432/alpaca", label_cache_size=2)
+
+        store._cache_label("Q1", "Alpha")
+        store._cache_label("Q2", "Beta")
+        store._cache_label("Q3", "Gamma")
+
+        self.assertEqual(list(store._label_cache.keys()), ["Q2", "Q3"])
+
     def test_entity_search_columns_keep_multilingual_labels_and_dedupe_aliases(self) -> None:
         columns = _entity_search_columns(
             label="Rome",

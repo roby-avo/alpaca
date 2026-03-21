@@ -4,6 +4,7 @@ import json
 import math
 import re
 import zlib
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -59,6 +60,7 @@ MAX_STORED_ALIASES = 128
 DEFAULT_INDEX_PROFILE = "lean"
 VALID_INDEX_PROFILES = frozenset({"lean", "full"})
 DEFAULT_MAX_CONTEXT_CHARS = 512
+DEFAULT_LABEL_CACHE_SIZE = 200_000
 _SIM_SAMPLE_MULTIPLIER = 1_103_515_245
 _SIM_SAMPLE_SEED_MULTIPLIER = 97_531
 _SIM_SAMPLE_INCREMENT = 12_345
@@ -609,10 +611,12 @@ def build_entity_context_string(
 
 
 class PostgresStore:
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, *, label_cache_size: int = DEFAULT_LABEL_CACHE_SIZE) -> None:
         self.dsn = dsn.strip()
         if not self.dsn:
             raise ValueError("Postgres DSN must be non-empty.")
+        self._label_cache_size = max(0, int(label_cache_size))
+        self._label_cache: OrderedDict[str, str | None] = OrderedDict()
 
     def _connect(self) -> Any:
         pg = _require_psycopg()
@@ -991,9 +995,26 @@ class PostgresStore:
                     if batch:
                         yield batch
 
-    def load_context_inputs(self, qids: Sequence[str]) -> list[tuple[str, list[str]]]:
+    def _cache_label(self, qid: str, label: str | None) -> None:
+        if self._label_cache_size <= 0 or not qid:
+            return
+        if qid in self._label_cache:
+            self._label_cache.move_to_end(qid)
+        self._label_cache[qid] = label
+        while len(self._label_cache) > self._label_cache_size:
+            self._label_cache.popitem(last=False)
+
+    def load_context_inputs(
+        self,
+        qids: Sequence[str],
+        *,
+        conn: Any | None = None,
+    ) -> list[tuple[str, list[str]]]:
         if not qids:
             return []
+        if conn is None:
+            with self._connect() as temp_conn:
+                return self.load_context_inputs(qids, conn=temp_conn)
         sql = """
         SELECT
             subject_qid,
@@ -1002,10 +1023,9 @@ class PostgresStore:
         WHERE subject_qid = ANY(%s)
         GROUP BY subject_qid
         """
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (list(qids),))
-                rows = cur.fetchall()
+        with conn.cursor() as cur:
+            cur.execute(sql, (list(qids),))
+            rows = cur.fetchall()
         out: list[tuple[str, list[str]]] = []
         for qid, related in rows:
             if not isinstance(qid, str):
@@ -1076,29 +1096,69 @@ class PostgresStore:
 
         return result
 
-    def resolve_labels(self, qids: Sequence[str]) -> dict[str, str]:
+    def resolve_labels(
+        self,
+        qids: Sequence[str],
+        *,
+        conn: Any | None = None,
+    ) -> dict[str, str]:
         if not qids:
             return {}
+        normalized_qids: list[str] = []
+        seen: set[str] = set()
+        for qid in qids:
+            if not isinstance(qid, str):
+                continue
+            cleaned = qid.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            normalized_qids.append(cleaned)
+        if not normalized_qids:
+            return {}
+
+        if conn is None:
+            with self._connect() as temp_conn:
+                return self.resolve_labels(normalized_qids, conn=temp_conn)
+
+        resolved: dict[str, str] = {}
+        missing: list[str] = []
+        for qid in normalized_qids:
+            if qid in self._label_cache:
+                self._label_cache.move_to_end(qid)
+                cached = self._label_cache[qid]
+                if cached:
+                    resolved[qid] = cached
+                continue
+            missing.append(qid)
+        if not missing:
+            return resolved
+
         sql = """
         SELECT qid, label
         FROM entities
         WHERE qid = ANY(%s)
         """
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (list(qids),))
-                rows = cur.fetchall()
-        resolved: dict[str, str] = {}
+        with conn.cursor() as cur:
+            cur.execute(sql, (list(missing),))
+            rows = cur.fetchall()
+        fetched: dict[str, str] = {}
         for qid, label in rows:
             if not isinstance(qid, str):
                 continue
             if isinstance(label, str) and label.strip():
-                resolved[qid] = label.strip()
-        missing = [qid for qid in qids if isinstance(qid, str) and qid not in resolved]
+                fetched[qid] = label.strip()
+        missing = [qid for qid in missing if qid not in fetched]
         if missing:
-            for qid, label in self.resolve_sample_cache_labels(missing).items():
-                if qid not in resolved and label:
-                    resolved[qid] = label
+            for qid, label in self.resolve_sample_cache_labels(missing, conn=conn).items():
+                if qid not in fetched and label:
+                    fetched[qid] = label
+        for qid in normalized_qids:
+            if qid in fetched:
+                resolved[qid] = fetched[qid]
+                self._cache_label(qid, fetched[qid])
+            elif qid not in self._label_cache:
+                self._cache_label(qid, None)
         return resolved
 
     def build_context_strings(
@@ -1107,6 +1167,7 @@ class PostgresStore:
         *,
         chunk_size: int = 1000,
         max_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+        conn: Any | None = None,
     ) -> dict[str, str]:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
@@ -1122,11 +1183,19 @@ class PostgresStore:
             normalized_qids.append(cleaned)
         if not normalized_qids:
             return {}
+        if conn is None:
+            with self._connect() as temp_conn:
+                return self.build_context_strings(
+                    normalized_qids,
+                    chunk_size=chunk_size,
+                    max_chars=max_chars,
+                    conn=temp_conn,
+                )
 
         context_map: dict[str, str] = {}
         for start in range(0, len(normalized_qids), chunk_size):
             chunk = normalized_qids[start : start + chunk_size]
-            batch = self.load_context_inputs(chunk)
+            batch = self.load_context_inputs(chunk, conn=conn)
 
             related_ids: list[str] = []
             related_seen: set[str] = set()
@@ -1137,7 +1206,7 @@ class PostgresStore:
                     related_seen.add(object_qid)
                     related_ids.append(object_qid)
 
-            label_map = self.resolve_labels(related_ids)
+            label_map = self.resolve_labels(related_ids, conn=conn)
             for qid, object_qids in batch:
                 related_labels = [
                     label_map[object_qid].strip()
@@ -1156,6 +1225,7 @@ class PostgresStore:
         *,
         chunk_size: int = 1000,
         max_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+        conn: Any | None = None,
     ) -> list[dict[str, Any]]:
         if not rows:
             return []
@@ -1168,24 +1238,32 @@ class PostgresStore:
             ],
             chunk_size=chunk_size,
             max_chars=max_chars,
+            conn=conn,
         )
         for row in hydrated:
             qid = row.get("qid")
             row["context_string"] = context_map.get(qid, "") if isinstance(qid, str) else ""
         return hydrated
 
-    def resolve_sample_cache_labels(self, qids: Sequence[str]) -> dict[str, str]:
+    def resolve_sample_cache_labels(
+        self,
+        qids: Sequence[str],
+        *,
+        conn: Any | None = None,
+    ) -> dict[str, str]:
         if not qids:
             return {}
+        if conn is None:
+            with self._connect() as temp_conn:
+                return self.resolve_sample_cache_labels(qids, conn=temp_conn)
         sql = """
         SELECT qid, entity_json
         FROM sample_entity_cache
         WHERE qid = ANY(%s)
         """
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (list(qids),))
-                rows = cur.fetchall()
+        with conn.cursor() as cur:
+            cur.execute(sql, (list(qids),))
+            rows = cur.fetchall()
         resolved: dict[str, str] = {}
         for qid, entity_json in rows:
             if not isinstance(qid, str):

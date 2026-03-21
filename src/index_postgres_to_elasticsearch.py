@@ -717,34 +717,36 @@ def _iter_documents_from_postgres(
     ORDER BY {source_alias}.qid
     """
     with pg.connect(postgres_dsn) as conn:
-        # Named cursor streams rows from server to avoid loading the whole table.
-        with conn.cursor(name="alpaca_es_export_cursor") as cur:
-            cur.itersize = int(batch_size)
-            cur.execute(sql, tuple(params))
-            while True:
-                rows = cur.fetchmany(int(batch_size))
-                if not rows:
-                    return
-                docs: list[dict[str, Any]] = []
-                for row in rows:
-                    doc = _row_to_document(
-                        row,
-                        max_indexed_labels=max_indexed_labels,
-                        max_indexed_aliases=max_indexed_aliases,
-                    )
-                    if doc:
-                        docs.append(doc)
-                if docs:
-                    if table_name_tail == "entities":
-                        for docs_chunk in _chunked(docs, yield_chunk_size):
-                            yield context_store.attach_context_strings(
-                                docs_chunk,
-                                chunk_size=yield_chunk_size,
-                                max_chars=max_context_chars,
-                            )
-                    else:
-                        for docs_chunk in _chunked(docs, yield_chunk_size):
-                            yield docs_chunk
+        with context_store._connect() as context_conn:
+            # Named cursor streams rows from server to avoid loading the whole table.
+            with conn.cursor(name="alpaca_es_export_cursor") as cur:
+                cur.itersize = int(batch_size)
+                cur.execute(sql, tuple(params))
+                while True:
+                    rows = cur.fetchmany(int(batch_size))
+                    if not rows:
+                        return
+                    docs: list[dict[str, Any]] = []
+                    for row in rows:
+                        doc = _row_to_document(
+                            row,
+                            max_indexed_labels=max_indexed_labels,
+                            max_indexed_aliases=max_indexed_aliases,
+                        )
+                        if doc:
+                            docs.append(doc)
+                    if docs:
+                        if table_name_tail == "entities":
+                            for docs_chunk in _chunked(docs, yield_chunk_size):
+                                yield context_store.attach_context_strings(
+                                    docs_chunk,
+                                    chunk_size=yield_chunk_size,
+                                    max_chars=max_context_chars,
+                                    conn=context_conn,
+                                )
+                        else:
+                            for docs_chunk in _chunked(docs, yield_chunk_size):
+                                yield docs_chunk
 
 
 def _prefer_estimated_row_total(*values: Any) -> int | None:
@@ -1090,7 +1092,8 @@ def _run(args: argparse.Namespace) -> int:
                     read=docs_read,
                     indexed=docs_indexed,
                     inflight=len(futures),
-                    submitted=bulk_submitted,
+                    submitted=docs_submitted,
+                    bulk_reqs=bulk_submitted,
                 )
 
                 for chunk in _chunked(batch_docs, int(args.bulk_actions)):
