@@ -688,6 +688,7 @@ def _iter_documents_from_postgres(
     table_sql = _quote_table_name(table_name)
     context_store = PostgresStore(postgres_dsn)
     table_name_tail = table_name.strip().split(".")[-1]
+    yield_chunk_size = min(DEFAULT_BULK_ACTIONS, max(1, int(batch_size)))
     source_alias = "src"
     where_sql = ""
     params: list[Any] = []
@@ -735,13 +736,15 @@ def _iter_documents_from_postgres(
                         docs.append(doc)
                 if docs:
                     if table_name_tail == "entities":
-                        yield context_store.attach_context_strings(
-                            docs,
-                            chunk_size=min(2000, max(1, batch_size)),
-                            max_chars=max_context_chars,
-                        )
+                        for docs_chunk in _chunked(docs, yield_chunk_size):
+                            yield context_store.attach_context_strings(
+                                docs_chunk,
+                                chunk_size=yield_chunk_size,
+                                max_chars=max_context_chars,
+                            )
                     else:
-                        yield docs
+                        for docs_chunk in _chunked(docs, yield_chunk_size):
+                            yield docs_chunk
 
 
 def _prefer_estimated_row_total(*values: Any) -> int | None:
@@ -1042,6 +1045,7 @@ def _run(args: argparse.Namespace) -> int:
     max_inflight = int(args.max_inflight) if int(args.max_inflight) > 0 else int(args.workers) * 3
     docs_read = 0
     docs_indexed = 0
+    docs_submitted = 0
     bulk_submitted = 0
     futures: set[Future[int]] = set()
 
@@ -1103,7 +1107,16 @@ def _run(args: argparse.Namespace) -> int:
                         retry_backoff_seconds=float(args.retry_backoff_seconds),
                     )
                     futures.add(future)
+                    docs_submitted += len(chunk)
                     bulk_submitted += 1
+                    progress.update(len(chunk))
+                    progress.set_postfix(
+                        read=docs_read,
+                        indexed=docs_indexed,
+                        submitted=docs_submitted,
+                        inflight=len(futures),
+                        bulk_reqs=bulk_submitted,
+                    )
 
                     if len(futures) >= max_inflight:
                         indexed, futures = _drain_futures(
@@ -1111,22 +1124,22 @@ def _run(args: argparse.Namespace) -> int:
                             return_when=FIRST_COMPLETED,
                         )
                         docs_indexed += indexed
-                        progress.update(indexed)
                         progress.set_postfix(
                             read=docs_read,
                             indexed=docs_indexed,
+                            submitted=docs_submitted,
                             inflight=len(futures),
-                            submitted=bulk_submitted,
+                            bulk_reqs=bulk_submitted,
                         )
 
             indexed, futures = _drain_futures(futures, return_when=ALL_COMPLETED)
             docs_indexed += indexed
-            progress.update(indexed)
             progress.set_postfix(
                 read=docs_read,
                 indexed=docs_indexed,
+                submitted=docs_submitted,
                 inflight=len(futures),
-                submitted=bulk_submitted,
+                bulk_reqs=bulk_submitted,
             )
 
     if not args.skip_finalize_settings:
