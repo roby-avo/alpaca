@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from src.postgres_store import (
+    _needs_legacy_entity_name_migration,
     PostgresStore,
     _entity_triples_index_create_statements,
     _entity_triples_index_drop_statements,
@@ -14,6 +15,26 @@ from src.postgres_store import (
 
 
 class PostgresStoreHelpersTests(unittest.TestCase):
+    def test_legacy_name_migration_only_runs_when_legacy_sources_exist(self) -> None:
+        self.assertFalse(
+            _needs_legacy_entity_name_migration(
+                entity_columns={"qid", "label", "labels", "aliases"},
+                payload_type="",
+            )
+        )
+        self.assertTrue(
+            _needs_legacy_entity_name_migration(
+                entity_columns={"qid", "label", "labels", "aliases", "name_variants"},
+                payload_type="",
+            )
+        )
+        self.assertTrue(
+            _needs_legacy_entity_name_migration(
+                entity_columns={"qid", "label", "labels", "aliases"},
+                payload_type="bytea",
+            )
+        )
+
     def test_label_cache_eviction_stays_bounded(self) -> None:
         store = PostgresStore("postgresql://postgres@localhost:5432/alpaca", label_cache_size=2)
 

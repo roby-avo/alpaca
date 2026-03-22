@@ -89,7 +89,6 @@ def healthz() -> dict[str, Any]:
     entity_count: int | None = None
     try:
         store = PostgresStore(postgres_dsn)
-        store.ensure_schema()
         postgres_healthy = True
         entity_count = store.count_entities()
     except Exception:

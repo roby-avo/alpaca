@@ -116,6 +116,16 @@ def _entity_triples_index_create_statements() -> list[str]:
     ]
 
 
+def _needs_legacy_entity_name_migration(*, entity_columns: set[str], payload_type: str) -> bool:
+    if payload_type:
+        return True
+    if "legacy_labels" in entity_columns or "labels_json" in entity_columns:
+        return True
+    if "name_variants" in entity_columns:
+        return True
+    return False
+
+
 def sampled_seed_row_number(*, sample_no: int, seed_count: int, random_seed: int) -> int:
     if sample_no < 0:
         raise ValueError("sample_no must be >= 0")
@@ -671,14 +681,17 @@ class PostgresStore:
         *,
         entity_columns: set[str],
     ) -> None:
-        aliases_column = "aliases" if "aliases" in entity_columns else ""
-        if not aliases_column and "name_variants" in entity_columns:
-            aliases_column = "name_variants"
+        payload_type = self._column_data_type(conn, table_name="entities", column_name="name_payload")
+        if not _needs_legacy_entity_name_migration(
+            entity_columns=entity_columns,
+            payload_type=payload_type,
+        ):
+            return
 
+        legacy_aliases_column = "name_variants" if "name_variants" in entity_columns else ""
         legacy_labels_column = "legacy_labels" if "legacy_labels" in entity_columns else ""
         if not legacy_labels_column and "labels_json" in entity_columns:
             legacy_labels_column = "labels_json"
-        payload_type = self._column_data_type(conn, table_name="entities", column_name="name_payload")
 
         select_columns = [
             "qid",
@@ -686,7 +699,7 @@ class PostgresStore:
             "labels" if "labels" in entity_columns else "ARRAY[]::text[] AS labels",
             "aliases" if "aliases" in entity_columns else "ARRAY[]::text[] AS aliases",
             legacy_labels_column if legacy_labels_column else "NULL::text[] AS legacy_labels",
-            aliases_column if aliases_column else "NULL::text[] AS legacy_aliases",
+            legacy_aliases_column if legacy_aliases_column else "NULL::text[] AS legacy_aliases",
             "name_payload" if payload_type else "NULL AS name_payload",
         ]
         read_cur = conn.cursor(name="alpaca_entities_legacy_name_migration")
@@ -785,6 +798,10 @@ class PostgresStore:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
+            conn.commit()
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
                 cur.execute(
                     """
                     SELECT column_name
@@ -796,34 +813,44 @@ class PostgresStore:
                 entity_columns = {
                     row[0]
                     for row in cur.fetchall()
-                    if row and isinstance(row[0], str)
+                        if row and isinstance(row[0], str)
                 }
-            self._migrate_legacy_entity_names_to_entities(conn, entity_columns=entity_columns)
-            with conn.cursor() as cur:
-                for index_name in (
-                    "idx_entities_search_vector",
-                    "idx_entities_label_trgm",
-                    "idx_entities_aliases_trgm",
-                    "idx_entities_aliases_text_trgm",
-                    "idx_entities_name_variants_trgm",
-                    "idx_entities_label_exact",
-                    "idx_entities_aliases_exact",
-                    "idx_entities_cross_refs_exact",
-                    "idx_entities_cross_refs_text_trgm",
-                    "idx_entities_cross_refs_url_trgm",
-                ):
-                    cur.execute(f"DROP INDEX IF EXISTS {_quote_identifier(index_name)}")
-                cur.execute("DROP FUNCTION IF EXISTS alpaca_join_text_array(TEXT[])")
-                cur.execute("DROP FUNCTION IF EXISTS alpaca_filter_fts_text(TEXT)")
-                cur.execute("DROP FUNCTION IF EXISTS alpaca_filter_fts_context(TEXT)")
-                cur.execute("DROP EXTENSION IF EXISTS pg_trgm CASCADE")
-                cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS name_variants")
-                cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS name_payload")
-                cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS relation_object_qids")
-                cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS search_vector")
-                cur.execute("DROP TABLE IF EXISTS entity_name_payloads")
-                cur.execute("DROP TABLE IF EXISTS entity_context_inputs")
+            payload_type = self._column_data_type(conn, table_name="entities", column_name="name_payload")
+            needs_migration = _needs_legacy_entity_name_migration(
+                entity_columns=entity_columns,
+                payload_type=payload_type,
+            )
+            if needs_migration:
+                self._migrate_legacy_entity_names_to_entities(conn, entity_columns=entity_columns)
             conn.commit()
+
+        if needs_migration:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    for index_name in (
+                        "idx_entities_search_vector",
+                        "idx_entities_label_trgm",
+                        "idx_entities_aliases_trgm",
+                        "idx_entities_aliases_text_trgm",
+                        "idx_entities_name_variants_trgm",
+                        "idx_entities_label_exact",
+                        "idx_entities_aliases_exact",
+                        "idx_entities_cross_refs_exact",
+                        "idx_entities_cross_refs_text_trgm",
+                        "idx_entities_cross_refs_url_trgm",
+                    ):
+                        cur.execute(f"DROP INDEX IF EXISTS {_quote_identifier(index_name)}")
+                    cur.execute("DROP FUNCTION IF EXISTS alpaca_join_text_array(TEXT[])")
+                    cur.execute("DROP FUNCTION IF EXISTS alpaca_filter_fts_text(TEXT)")
+                    cur.execute("DROP FUNCTION IF EXISTS alpaca_filter_fts_context(TEXT)")
+                    cur.execute("DROP EXTENSION IF EXISTS pg_trgm CASCADE")
+                    cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS name_variants")
+                    cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS name_payload")
+                    cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS relation_object_qids")
+                    cur.execute("ALTER TABLE entities DROP COLUMN IF EXISTS search_vector")
+                    cur.execute("DROP TABLE IF EXISTS entity_name_payloads")
+                    cur.execute("DROP TABLE IF EXISTS entity_context_inputs")
+                conn.commit()
 
     def ensure_search_indexes(
         self,
