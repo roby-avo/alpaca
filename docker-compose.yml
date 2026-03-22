@@ -78,7 +78,7 @@ services:
     image: cars10/elasticvue:${ALPACA_ELASTICVUE_VERSION:-1.13.0}
     environment:
       ELASTICVUE_CLUSTERS: >-
-        [{"name":"alpaca-local","uri":"http://localhost:${ALPACA_ELASTIC_PORT:-9200}"}]
+        [{"name":"alpaca","uri":"http://localhost:${ALPACA_ELASTIC_PORT:-9200}"}]
     depends_on:
       elasticsearch:
         condition: service_healthy
