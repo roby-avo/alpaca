@@ -387,8 +387,12 @@ def _build_index_payload() -> dict[str, Any]:
         },
         "mappings": {
             "dynamic": "strict",
-            "properties": {
-                "qid": {"type": "keyword", "index": False, "doc_values": False},
+                "properties": {
+                "qid": {
+                    "type": "keyword",
+                    "normalizer": "alpaca_keyword_lower",
+                    "ignore_above": 64,
+                },
                 "label": {
                     "type": "text",
                     "analyzer": "alpaca_text",
@@ -693,42 +697,121 @@ def _iter_documents_from_postgres(
     table_name_tail = table_name.strip().split(".")[-1]
     effective_yield_chunk_size = min(max(1, int(yield_chunk_size)), max(1, int(batch_size)))
     source_alias = "src"
-    where_sql = ""
-    params: list[Any] = []
-    if updated_since:
-        where_sql = f"WHERE {source_alias}.updated_at >= %s::timestamptz"
-        params.append(updated_since)
-
-    sql = f"""
-    SELECT
-        {source_alias}.qid,
-        {source_alias}.label,
-        {source_alias}.labels,
-        {source_alias}.aliases,
-        {source_alias}.description,
-        {source_alias}.types,
-        {source_alias}.coarse_type,
-        {source_alias}.fine_type,
-        {source_alias}.item_category,
-        {source_alias}.popularity,
-        {source_alias}.prior,
-        {source_alias}.wikipedia_url,
-        {source_alias}.dbpedia_url,
-        {source_alias}.updated_at
-    FROM {table_sql} AS {source_alias}
-    {where_sql}
-    ORDER BY {source_alias}.qid
-    """
+    last_qid: str | None = None
     with pg.connect(postgres_dsn) as conn:
-        with context_store._connect() as context_conn:
-            # Named cursor streams rows from server to avoid loading the whole table.
-            with conn.cursor(name="alpaca_es_export_cursor") as cur:
-                cur.itersize = int(batch_size)
-                cur.execute(sql, tuple(params))
+        context_conn_cm: Any
+        if table_name_tail == "entities":
+            context_conn_cm = context_store._connect()
+        else:
+            context_conn_cm = None
+        if context_conn_cm is None:
+            context_conn_manager = None
+        else:
+            context_conn_manager = context_conn_cm
+        if context_conn_manager is None:
+            context_conn = None
+            while True:
+                batch_where_parts: list[str] = []
+                batch_params: list[Any] = []
+                if updated_since:
+                    batch_where_parts.append(f"{source_alias}.updated_at >= %s::timestamptz")
+                    batch_params.append(updated_since)
+                if last_qid is not None:
+                    batch_where_parts.append(f"{source_alias}.qid > %s")
+                    batch_params.append(last_qid)
+                batch_where_sql = ""
+                if batch_where_parts:
+                    batch_where_sql = "WHERE " + " AND ".join(batch_where_parts)
+
+                batch_sql = f"""
+                SELECT
+                    {source_alias}.qid,
+                    {source_alias}.label,
+                    {source_alias}.labels,
+                    {source_alias}.aliases,
+                    {source_alias}.description,
+                    {source_alias}.types,
+                    {source_alias}.coarse_type,
+                    {source_alias}.fine_type,
+                    {source_alias}.item_category,
+                    {source_alias}.popularity,
+                    {source_alias}.prior,
+                    {source_alias}.wikipedia_url,
+                    {source_alias}.dbpedia_url,
+                    {source_alias}.updated_at
+                FROM {table_sql} AS {source_alias}
+                {batch_where_sql}
+                ORDER BY {source_alias}.qid
+                LIMIT %s
+                """
+                batch_params.append(int(batch_size))
+
+                with conn.cursor() as cur:
+                    cur.execute(batch_sql, tuple(batch_params))
+                    rows = cur.fetchall()
+                if not rows:
+                    return
+                last_row_qid = rows[-1][0]
+                last_qid = last_row_qid if isinstance(last_row_qid, str) else last_qid
+
+                docs: list[dict[str, Any]] = []
+                for row in rows:
+                    doc = _row_to_document(
+                        row,
+                        max_indexed_labels=max_indexed_labels,
+                        max_indexed_aliases=max_indexed_aliases,
+                    )
+                    if doc:
+                        docs.append(doc)
+                if docs:
+                    for docs_chunk in _chunked(docs, effective_yield_chunk_size):
+                        yield docs_chunk
+        else:
+            with context_conn_manager as context_conn:
                 while True:
-                    rows = cur.fetchmany(int(batch_size))
+                    batch_where_parts: list[str] = []
+                    batch_params: list[Any] = []
+                    if updated_since:
+                        batch_where_parts.append(f"{source_alias}.updated_at >= %s::timestamptz")
+                        batch_params.append(updated_since)
+                    if last_qid is not None:
+                        batch_where_parts.append(f"{source_alias}.qid > %s")
+                        batch_params.append(last_qid)
+                    batch_where_sql = ""
+                    if batch_where_parts:
+                        batch_where_sql = "WHERE " + " AND ".join(batch_where_parts)
+
+                    batch_sql = f"""
+                    SELECT
+                        {source_alias}.qid,
+                        {source_alias}.label,
+                        {source_alias}.labels,
+                        {source_alias}.aliases,
+                        {source_alias}.description,
+                        {source_alias}.types,
+                        {source_alias}.coarse_type,
+                        {source_alias}.fine_type,
+                        {source_alias}.item_category,
+                        {source_alias}.popularity,
+                        {source_alias}.prior,
+                        {source_alias}.wikipedia_url,
+                        {source_alias}.dbpedia_url,
+                        {source_alias}.updated_at
+                    FROM {table_sql} AS {source_alias}
+                    {batch_where_sql}
+                    ORDER BY {source_alias}.qid
+                    LIMIT %s
+                    """
+                    batch_params.append(int(batch_size))
+
+                    with conn.cursor() as cur:
+                        cur.execute(batch_sql, tuple(batch_params))
+                        rows = cur.fetchall()
                     if not rows:
                         return
+                    last_row_qid = rows[-1][0]
+                    last_qid = last_row_qid if isinstance(last_row_qid, str) else last_qid
+
                     docs: list[dict[str, Any]] = []
                     for row in rows:
                         doc = _row_to_document(
@@ -739,17 +822,13 @@ def _iter_documents_from_postgres(
                         if doc:
                             docs.append(doc)
                     if docs:
-                        if table_name_tail == "entities":
-                            for docs_chunk in _chunked(docs, effective_yield_chunk_size):
-                                yield context_store.attach_context_strings(
-                                    docs_chunk,
-                                    chunk_size=effective_yield_chunk_size,
-                                    max_chars=max_context_chars,
-                                    conn=context_conn,
-                                )
-                        else:
-                            for docs_chunk in _chunked(docs, effective_yield_chunk_size):
-                                yield docs_chunk
+                        for docs_chunk in _chunked(docs, effective_yield_chunk_size):
+                            yield context_store.attach_context_strings(
+                                docs_chunk,
+                                chunk_size=effective_yield_chunk_size,
+                                max_chars=max_context_chars,
+                                conn=context_conn,
+                            )
 
 
 def _prefer_estimated_row_total(*values: Any) -> int | None:

@@ -161,7 +161,7 @@ Elasticsearch indexing reads directly from PostgreSQL `entities`, so the same
 single table used for parsing/intermediate storage is also the export source.
 
 The production Elasticsearch mapping is intentionally lean:
-- indexed text stays focused on `label`, secondary `labels`, `aliases`, and compact triples-backed `context_string`
+- indexed text stays focused on `qid`, `label`, secondary `labels`, `aliases`, compact triples-backed `context_string`, and exact cross-ref fields
 - `description` and `types` are still returned in `_source`, but are not indexed
 - compact `wikipedia_url` and `dbpedia_url` refs are indexed as exact-match `keyword` fields so retrieval can narrow candidate space by cross-reference
 - secondary names are clipped before export (defaults: `--max-indexed-labels 12`, `--max-indexed-aliases 24`)
@@ -205,6 +205,9 @@ By default the progress bar total now uses a fast PostgreSQL estimate instead of
 `COUNT(*)`, so large full-table mirrors keep a useful total without the long
 startup delay. Use `--exact-count-total` only if you explicitly need an exact
 row count first.
+The exporter also paginates by `qid` now instead of relying on one giant ordered
+cursor, which avoids the long PostgreSQL startup delay before the first batch on
+very large tables.
 
 Local helper script (same module):
 
