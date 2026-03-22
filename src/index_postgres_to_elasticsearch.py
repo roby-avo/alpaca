@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -25,9 +26,10 @@ DEFAULT_ELASTICSEARCH_URL_LOCAL = "http://localhost:9200"
 DEFAULT_ELASTICSEARCH_URL_DOCKER = "http://elasticsearch:9200"
 DEFAULT_INDEX_NAME = "alpaca-entities"
 DEFAULT_TABLE_NAME = "entities"
-DEFAULT_FETCH_SIZE = 10_000
-DEFAULT_BULK_ACTIONS = 2_000
-DEFAULT_WORKERS = 4
+DEFAULT_FETCH_SIZE = 15_000
+DEFAULT_BULK_ACTIONS = 2_500
+DEFAULT_WORKERS = max(1, min(6, (os.cpu_count() or 1)))
+DEFAULT_MAX_INFLIGHT_FACTOR = 2
 DEFAULT_MAX_RETRIES = 4
 DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 90.0
@@ -167,7 +169,7 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help=(
             "Maximum submitted bulk requests not yet completed. "
-            "Default: workers * 3."
+            f"Default: workers * {DEFAULT_MAX_INFLIGHT_FACTOR}."
         ),
     )
     parser.add_argument(
@@ -456,13 +458,13 @@ def _build_index_payload() -> dict[str, Any]:
                 # Compact refs from Postgres, without full URL prefixes.
                 "wikipedia_url": {
                     "type": "keyword",
-                    "index": False,
-                    "doc_values": False,
+                    "normalizer": "alpaca_keyword_lower",
+                    "ignore_above": 2048,
                 },
                 "dbpedia_url": {
                     "type": "keyword",
-                    "index": False,
-                    "doc_values": False,
+                    "normalizer": "alpaca_keyword_lower",
+                    "ignore_above": 2048,
                 },
                 "updated_at": {"type": "date"},
             },
@@ -683,12 +685,13 @@ def _iter_documents_from_postgres(
     max_indexed_labels: int,
     max_indexed_aliases: int,
     max_context_chars: int,
+    yield_chunk_size: int,
 ) -> Iterator[list[dict[str, Any]]]:
     pg = _require_psycopg()
     table_sql = _quote_table_name(table_name)
     context_store = PostgresStore(postgres_dsn)
     table_name_tail = table_name.strip().split(".")[-1]
-    yield_chunk_size = min(DEFAULT_BULK_ACTIONS, max(1, int(batch_size)))
+    effective_yield_chunk_size = min(max(1, int(yield_chunk_size)), max(1, int(batch_size)))
     source_alias = "src"
     where_sql = ""
     params: list[Any] = []
@@ -737,15 +740,15 @@ def _iter_documents_from_postgres(
                             docs.append(doc)
                     if docs:
                         if table_name_tail == "entities":
-                            for docs_chunk in _chunked(docs, yield_chunk_size):
+                            for docs_chunk in _chunked(docs, effective_yield_chunk_size):
                                 yield context_store.attach_context_strings(
                                     docs_chunk,
-                                    chunk_size=yield_chunk_size,
+                                    chunk_size=effective_yield_chunk_size,
                                     max_chars=max_context_chars,
                                     conn=context_conn,
                                 )
                         else:
-                            for docs_chunk in _chunked(docs, yield_chunk_size):
+                            for docs_chunk in _chunked(docs, effective_yield_chunk_size):
                                 yield docs_chunk
 
 
@@ -1044,7 +1047,11 @@ def _run(args: argparse.Namespace) -> int:
             else:
                 print(f"Source rows to index: ~{total_rows} (estimated)")
 
-    max_inflight = int(args.max_inflight) if int(args.max_inflight) > 0 else int(args.workers) * 3
+    max_inflight = (
+        int(args.max_inflight)
+        if int(args.max_inflight) > 0
+        else int(args.workers) * DEFAULT_MAX_INFLIGHT_FACTOR
+    )
     docs_read = 0
     docs_indexed = 0
     docs_submitted = 0
@@ -1086,6 +1093,7 @@ def _run(args: argparse.Namespace) -> int:
                 max_indexed_labels=int(args.max_indexed_labels),
                 max_indexed_aliases=int(args.max_indexed_aliases),
                 max_context_chars=int(args.max_context_chars),
+                yield_chunk_size=int(args.bulk_actions),
             ):
                 docs_read += len(batch_docs)
                 progress.set_postfix(

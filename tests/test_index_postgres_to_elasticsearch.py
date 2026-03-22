@@ -48,7 +48,7 @@ class IndexPostgresToElasticsearchTests(unittest.TestCase):
         self.assertEqual(doc["dbpedia_url"], "it.dbpedia.org|Roma")
         self.assertEqual(doc["updated_at"], "2026-03-10T08:30:00+00:00")
 
-    def test_build_index_payload_keeps_description_and_types_stored_only(self) -> None:
+    def test_build_index_payload_keeps_description_and_types_stored_only_but_indexes_cross_refs(self) -> None:
         properties = _build_index_payload()["mappings"]["properties"]
 
         self.assertEqual(properties["description"], {"type": "text", "index": False})
@@ -58,7 +58,11 @@ class IndexPostgresToElasticsearchTests(unittest.TestCase):
         )
         self.assertEqual(
             properties["wikipedia_url"],
-            {"type": "keyword", "index": False, "doc_values": False},
+            {"type": "keyword", "normalizer": "alpaca_keyword_lower", "ignore_above": 2048},
+        )
+        self.assertEqual(
+            properties["dbpedia_url"],
+            {"type": "keyword", "normalizer": "alpaca_keyword_lower", "ignore_above": 2048},
         )
         self.assertNotIn("search_text", properties)
 

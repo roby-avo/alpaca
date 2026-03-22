@@ -162,7 +162,8 @@ single table used for parsing/intermediate storage is also the export source.
 
 The production Elasticsearch mapping is intentionally lean:
 - indexed text stays focused on `label`, secondary `labels`, `aliases`, and compact triples-backed `context_string`
-- `description`, `types`, `wikipedia_url`, and `dbpedia_url` are still returned in `_source`, but are not indexed
+- `description` and `types` are still returned in `_source`, but are not indexed
+- compact `wikipedia_url` and `dbpedia_url` refs are indexed as exact-match `keyword` fields so retrieval can narrow candidate space by cross-reference
 - secondary names are clipped before export (defaults: `--max-indexed-labels 12`, `--max-indexed-aliases 24`)
 - graph context is clipped before export (default: `--max-context-chars 256`)
 - graph context hydration reuses one dedicated Postgres connection and caches neighbor labels across chunks to keep long exports moving
@@ -179,9 +180,10 @@ Recreate and fully mirror the index:
 docker compose exec api python -m src.index_postgres_to_elasticsearch \
   --index-name alpaca-entities \
   --recreate-index \
-  --workers 4 \
-  --batch-size 10000 \
-  --bulk-actions 2000
+  --workers 6 \
+  --batch-size 15000 \
+  --bulk-actions 2500 \
+  --max-inflight 12
 ```
 
 Inside the `api` container, the default endpoints are the Docker Compose service
