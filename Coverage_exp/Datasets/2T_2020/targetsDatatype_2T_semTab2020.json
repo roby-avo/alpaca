@@ -1,0 +1,2564 @@
+{
+    "HQRATPBV": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "SHV3ZSSV": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "WZL61XYS": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "IYZYF533": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [
+            4,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "4": "NUMBER",
+            "5": "NUMBER"
+        }
+    },
+    "NV4GY44T": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            3
+        ],
+        "LIT": [
+            1,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "1": "STRING",
+            "2": "STRING"
+        }
+    },
+    "QNP7O8L5": {
+        "SUBJ": 1,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "WRGS0WCX": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "VKWTT7F7": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [
+            3,
+            4
+        ],
+        "LIT_DATATYPE": {
+            "3": "STRING",
+            "4": "STRING"
+        }
+    },
+    "DRSJ0SOG": {
+        "SUBJ": 2,
+        "NE": [
+            2,
+            3,
+            4,
+            6
+        ],
+        "LIT": [
+            0,
+            1,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "5": "NUMBER",
+            "1": "STRING"
+        }
+    },
+    "ND6V1CBE": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "DATETIME"
+        }
+    },
+    "EQZ21058": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "NUMBER"
+        }
+    },
+    "U5L6L4Q4": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            5
+        ],
+        "LIT": [
+            1,
+            2,
+            3,
+            4,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME",
+            "2": "STRING",
+            "3": "STRING",
+            "4": "STRING",
+            "6": "STRING"
+        }
+    },
+    "0D70DN48": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "NUMBER"
+        }
+    },
+    "HQCEC5NO": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "BDH3WFGJ": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [
+            3
+        ],
+        "LIT_DATATYPE": {
+            "3": "STRING"
+        }
+    },
+    "L2MCKOWX": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4
+        ],
+        "LIT": [
+            2,
+            3,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "3": "NUMBER",
+            "2": "STRING",
+            "5": "STRING",
+            "6": "STRING"
+        }
+    },
+    "HGYG2DVU": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "OZYCQ769": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2
+        ],
+        "LIT": [
+            0,
+            3,
+            4,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "3": "STRING",
+            "4": "STRING",
+            "5": "STRING",
+            "6": "STRING"
+        }
+    },
+    "LV5N8XDB": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2
+        ],
+        "LIT": [
+            1,
+            3,
+            4,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "3": "DATETIME",
+            "4": "NUMBER",
+            "1": "STRING",
+            "5": "STRING"
+        }
+    },
+    "I0ENR9U5": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [
+            4
+        ],
+        "LIT_DATATYPE": {
+            "4": "STRING"
+        }
+    },
+    "Z4M8AT89": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "ASNHTAOS": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2
+        ],
+        "LIT": [
+            0,
+            3,
+            4,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "5": "NUMBER",
+            "3": "STRING",
+            "4": "STRING",
+            "6": "STRING"
+        }
+    },
+    "HGIUTSCG": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3,
+            4
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME"
+        }
+    },
+    "SPPNJXB2": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [
+            2,
+            3,
+            4
+        ],
+        "LIT_DATATYPE": {
+            "2": "NUMBER",
+            "3": "NUMBER",
+            "4": "NUMBER"
+        }
+    },
+    "I6BBMPNU": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            4
+        ],
+        "LIT": [
+            3,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "3": "NUMBER",
+            "5": "DATETIME"
+        }
+    },
+    "AUU9A6KL": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            5,
+            7
+        ],
+        "LIT": [
+            2,
+            3,
+            4,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "2": "NUMBER",
+            "3": "DATETIME",
+            "6": "NUMBER",
+            "4": "STRING"
+        }
+    },
+    "4J75OL3W": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "NUMBER"
+        }
+    },
+    "GY7KNULP": {
+        "SUBJ": 1,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [
+            4
+        ],
+        "LIT_DATATYPE": {
+            "4": "DATETIME"
+        }
+    },
+    "0AJSJYAL": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "1": "NUMBER",
+            "2": "NUMBER",
+            "3": "NUMBER",
+            "4": "NUMBER",
+            "5": "STRING",
+            "6": "STRING"
+        }
+    },
+    "F98SUVJH": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "BLBITS6S": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "NUMBER"
+        }
+    },
+    "B20WIQKU": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "SRVLBA90": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "OP0PZIXY": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2,
+            3
+        ],
+        "LIT": [
+            0,
+            4,
+            5,
+            6,
+            7
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "4": "NUMBER",
+            "5": "NUMBER",
+            "6": "NUMBER",
+            "7": "NUMBER"
+        }
+    },
+    "U30NUSS7": {
+        "SUBJ": 1,
+        "NE": [
+            1
+        ],
+        "LIT": [
+            0,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "2": "DATETIME"
+        }
+    },
+    "O0BECB72": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [
+            4
+        ],
+        "LIT_DATATYPE": {
+            "4": "STRING"
+        }
+    },
+    "3DOM5NIW": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4,
+            5,
+            6
+        ],
+        "LIT": [
+            2,
+            3
+        ],
+        "LIT_DATATYPE": {
+            "2": "DATETIME",
+            "3": "STRING"
+        }
+    },
+    "2XHMV76G": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2
+        ],
+        "LIT": [
+            0,
+            3,
+            4,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "3": "STRING",
+            "4": "STRING",
+            "5": "STRING",
+            "6": "STRING"
+        }
+    },
+    "WI5LYQ0H": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "O0UJJVBR": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3,
+            4
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME"
+        }
+    },
+    "K3X3L22Y": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3,
+            5
+        ],
+        "LIT": [
+            4
+        ],
+        "LIT_DATATYPE": {
+            "4": "NUMBER"
+        }
+    },
+    "JMNRCW4E": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "DATETIME"
+        }
+    },
+    "FF00TEZG": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "ET9REW9Y": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "0IR0XIUW": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [
+            3
+        ],
+        "LIT_DATATYPE": {
+            "3": "NUMBER"
+        }
+    },
+    "CQH26T15": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2,
+            4,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "2": "DATETIME",
+            "4": "DATETIME",
+            "5": "NUMBER"
+        }
+    },
+    "64OJP4G3": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "4WMC1B70": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "K2VEUQT0": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [
+            2,
+            3,
+            4
+        ],
+        "LIT_DATATYPE": {
+            "2": "NUMBER",
+            "3": "NUMBER",
+            "4": "NUMBER"
+        }
+    },
+    "0H1C2CNE": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "HTF6MVY9": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "7QNYGYI7": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "QOL4ZIHL": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4
+        ],
+        "LIT": [
+            2,
+            3,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "5": "NUMBER",
+            "2": "STRING",
+            "3": "STRING",
+            "6": "STRING"
+        }
+    },
+    "8YINKYDR": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "YCOUS57M": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "4FFI99VQ": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            3
+        ],
+        "LIT": [
+            1,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "1": "STRING",
+            "2": "STRING"
+        }
+    },
+    "XBHX2VRT": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "9XAJBIJV": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3,
+            4
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME"
+        }
+    },
+    "SFGT3EDA": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "24W5SSRB": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            3,
+            4
+        ],
+        "LIT": [
+            1,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "1": "NUMBER",
+            "2": "STRING"
+        }
+    },
+    "MM6ZALRS": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [
+            2,
+            3,
+            4
+        ],
+        "LIT_DATATYPE": {
+            "2": "NUMBER",
+            "3": "NUMBER",
+            "4": "NUMBER"
+        }
+    },
+    "M56G7E6D": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "IZF82AX9": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "JZ22O0DD": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2
+        ],
+        "LIT": [
+            1,
+            3,
+            4,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "3": "DATETIME",
+            "4": "NUMBER",
+            "1": "STRING",
+            "5": "STRING"
+        }
+    },
+    "P86ZJFXK": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [
+            4
+        ],
+        "LIT_DATATYPE": {
+            "4": "NUMBER"
+        }
+    },
+    "E22XXKVQ": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "ZZNW93IV": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "2EZKB5RU": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "U1FDHL7N": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            3,
+            4
+        ],
+        "LIT": [
+            1,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "1": "NUMBER",
+            "2": "NUMBER"
+        }
+    },
+    "EV6LDIB8": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "WWBIR8H6": {
+        "SUBJ": 2,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [
+            3
+        ],
+        "LIT_DATATYPE": {
+            "3": "NUMBER"
+        }
+    },
+    "P8B3IAOY": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "HLJ9HHEE": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [
+            4,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "4": "NUMBER",
+            "5": "NUMBER"
+        }
+    },
+    "GNDO9OXJ": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "HCLZSPEJ": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "XZRRL5AE": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [
+            1,
+            2,
+            3,
+            4
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME",
+            "2": "NUMBER",
+            "3": "NUMBER",
+            "4": "NUMBER"
+        }
+    },
+    "B38A9Q5R": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            3
+        ],
+        "LIT": [
+            1,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "1": "STRING",
+            "2": "STRING"
+        }
+    },
+    "QIW5EC2H": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "5RV7WRO1": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2
+        ],
+        "LIT": [
+            0,
+            3,
+            4,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "5": "NUMBER",
+            "3": "STRING",
+            "4": "STRING",
+            "6": "STRING"
+        }
+    },
+    "5DKX42VB": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "FWSGRDQ3": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [
+            4
+        ],
+        "LIT_DATATYPE": {
+            "4": "NUMBER"
+        }
+    },
+    "NDSTZH1I": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [
+            2,
+            3,
+            4
+        ],
+        "LIT_DATATYPE": {
+            "2": "NUMBER",
+            "3": "NUMBER",
+            "4": "NUMBER"
+        }
+    },
+    "00E2H310": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "8R6ZM8HE": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [
+            3
+        ],
+        "LIT_DATATYPE": {
+            "3": "NUMBER"
+        }
+    },
+    "71SY0Z5S": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            3
+        ],
+        "LIT": [
+            0,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "2": "NUMBER"
+        }
+    },
+    "9JA43FJL": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2,
+            6
+        ],
+        "LIT": [
+            0,
+            3,
+            4,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "5": "DATETIME",
+            "3": "STRING",
+            "4": "STRING"
+        }
+    },
+    "CNQ5Z0BG": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3,
+            4
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME"
+        }
+    },
+    "29BNEL1Q": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "3C3INQLM": {
+        "SUBJ": 1,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "60G94POT": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4,
+            5,
+            6
+        ],
+        "LIT": [
+            2,
+            3,
+            7
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING",
+            "3": "STRING",
+            "7": "STRING"
+        }
+    },
+    "Y85GTOSS": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "1C9LFOKN": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "S7DQFOD4": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "NPNYM0BA": {
+        "SUBJ": 1,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "QOAVEFGY": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2,
+            6
+        ],
+        "LIT": [
+            0,
+            3,
+            4,
+            5,
+            7
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "5": "DATETIME",
+            "3": "STRING",
+            "4": "STRING",
+            "7": "STRING"
+        }
+    },
+    "E3ZK744Q": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            4
+        ],
+        "LIT": [
+            3
+        ],
+        "LIT_DATATYPE": {
+            "3": "STRING"
+        }
+    },
+    "7VVP9YIF": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "MLRJYJ5K": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4
+        ],
+        "LIT": [
+            2,
+            3,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING",
+            "3": "STRING",
+            "5": "STRING",
+            "6": "STRING"
+        }
+    },
+    "X23TMJ3R": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "5OLOTSKC": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "BID0NRU0": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "OIDIXPNZ": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "B7ILPH0Y": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "KUGCH9I3": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3,
+            4
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME"
+        }
+    },
+    "3JXMPC7N": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            3
+        ],
+        "LIT": [
+            1,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "1": "STRING",
+            "2": "STRING"
+        }
+    },
+    "TNI3UKH2": {
+        "SUBJ": 2,
+        "NE": [
+            2,
+            3,
+            4,
+            6
+        ],
+        "LIT": [
+            0,
+            1,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "5": "NUMBER",
+            "1": "STRING"
+        }
+    },
+    "2BEBH437": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "9Y8MPU2Q": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4,
+            5,
+            6
+        ],
+        "LIT": [
+            2,
+            3
+        ],
+        "LIT_DATATYPE": {
+            "2": "DATETIME",
+            "3": "STRING"
+        }
+    },
+    "PZXDACJ9": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "IP6ZRIGH": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "1MQL5T7F": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            5,
+            7
+        ],
+        "LIT": [
+            2,
+            3,
+            4,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "2": "NUMBER",
+            "3": "DATETIME",
+            "6": "NUMBER",
+            "4": "STRING"
+        }
+    },
+    "MZ0BI8NN": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [
+            3
+        ],
+        "LIT_DATATYPE": {
+            "3": "STRING"
+        }
+    },
+    "RYTFLT5K": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            4
+        ],
+        "LIT": [
+            3
+        ],
+        "LIT_DATATYPE": {
+            "3": "STRING"
+        }
+    },
+    "CAF0E2JH": {
+        "SUBJ": 2,
+        "NE": [
+            2,
+            3,
+            4,
+            6
+        ],
+        "LIT": [
+            0,
+            1,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "5": "NUMBER",
+            "1": "STRING"
+        }
+    },
+    "51MYHYDF": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [
+            3,
+            4
+        ],
+        "LIT_DATATYPE": {
+            "3": "STRING",
+            "4": "STRING"
+        }
+    },
+    "FVKKTA8O": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2,
+            3,
+            4
+        ],
+        "LIT": [
+            0
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER"
+        }
+    },
+    "4FW66XNV": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "1": "NUMBER",
+            "2": "NUMBER",
+            "3": "NUMBER",
+            "4": "NUMBER",
+            "5": "STRING",
+            "6": "STRING"
+        }
+    },
+    "7GOG4IKF": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "TW1HGRFI": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2
+        ],
+        "LIT": [
+            0,
+            3,
+            4,
+            5,
+            6,
+            7
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "3": "STRING",
+            "4": "STRING",
+            "5": "STRING",
+            "6": "STRING",
+            "7": "STRING"
+        }
+    },
+    "N6QAC84T": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2,
+            6
+        ],
+        "LIT": [
+            0,
+            3,
+            4,
+            5,
+            7
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "5": "DATETIME",
+            "3": "STRING",
+            "4": "STRING",
+            "7": "STRING"
+        }
+    },
+    "8MKQXO18": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3,
+            4
+        ],
+        "LIT": [
+            2,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "2": "NUMBER",
+            "5": "STRING",
+            "6": "STRING"
+        }
+    },
+    "X1LRVWSR": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "MSCT8MJD": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [
+            3
+        ],
+        "LIT_DATATYPE": {
+            "3": "NUMBER"
+        }
+    },
+    "QPFX5Z8J": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            5
+        ],
+        "LIT": [
+            1,
+            2,
+            3,
+            4,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME",
+            "2": "STRING",
+            "3": "STRING",
+            "4": "STRING",
+            "6": "STRING"
+        }
+    },
+    "P8JQV93S": {
+        "SUBJ": 1,
+        "NE": [
+            1
+        ],
+        "LIT": [
+            0,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "2": "DATETIME"
+        }
+    },
+    "OD9USH5H": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME"
+        }
+    },
+    "3N6S2FCX": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "4HP08FY9": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME"
+        }
+    },
+    "OHGI1JNY": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2
+        ],
+        "LIT": [
+            0,
+            3,
+            4,
+            5,
+            6,
+            7
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "3": "STRING",
+            "4": "STRING",
+            "5": "STRING",
+            "6": "STRING",
+            "7": "STRING"
+        }
+    },
+    "JZLRN9PL": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2,
+            3,
+            4
+        ],
+        "LIT": [
+            0
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER"
+        }
+    },
+    "VGUZX5R3": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2,
+            4,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "2": "DATETIME",
+            "4": "DATETIME",
+            "5": "NUMBER"
+        }
+    },
+    "4EGV2QNO": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "PWNRGOJ5": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4
+        ],
+        "LIT": [
+            2,
+            3,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "3": "NUMBER",
+            "2": "STRING",
+            "5": "STRING",
+            "6": "STRING"
+        }
+    },
+    "ORPKCFRL": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3,
+            5
+        ],
+        "LIT": [
+            4
+        ],
+        "LIT_DATATYPE": {
+            "4": "NUMBER"
+        }
+    },
+    "IPTLCCCU": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [
+            4
+        ],
+        "LIT_DATATYPE": {
+            "4": "DATETIME"
+        }
+    },
+    "WH6JINCM": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4
+        ],
+        "LIT": [
+            2,
+            3,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "5": "NUMBER",
+            "2": "STRING",
+            "3": "STRING",
+            "6": "STRING"
+        }
+    },
+    "OUL0NHS5": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2
+        ],
+        "LIT": [
+            0,
+            3
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "3": "DATETIME"
+        }
+    },
+    "AN306FAH": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3,
+            4
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME"
+        }
+    },
+    "T7RPWH6N": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2,
+            6
+        ],
+        "LIT": [
+            0,
+            3,
+            4,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "5": "DATETIME",
+            "3": "STRING",
+            "4": "STRING"
+        }
+    },
+    "HBKGJQEY": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2
+        ],
+        "LIT": [
+            0,
+            3
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "3": "DATETIME"
+        }
+    },
+    "SNUO09BH": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4,
+            5,
+            6
+        ],
+        "LIT": [
+            2,
+            3,
+            7
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING",
+            "3": "STRING",
+            "7": "STRING"
+        }
+    },
+    "8QA9EYPI": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "UURPYBGQ": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "KOQM4YU9": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "54S3KOBO": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "OKW6UUW5": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "8D8CVBT0": {
+        "SUBJ": 1,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "QW492LGU": {
+        "SUBJ": 1,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "9HIRS45A": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "A5TITKIN": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "VLUAWPBO": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4
+        ],
+        "LIT": [
+            2,
+            3,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING",
+            "3": "STRING",
+            "5": "STRING",
+            "6": "STRING"
+        }
+    },
+    "N9SJK368": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "JA4L7KWX": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            3
+        ],
+        "LIT": [
+            0,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "2": "NUMBER"
+        }
+    },
+    "JN0T2O5I": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "5HD27KI3": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            3,
+            4
+        ],
+        "LIT": [
+            1,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "1": "NUMBER",
+            "2": "NUMBER"
+        }
+    },
+    "3X6QY8Q0": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "X3RACWMT": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4
+        ],
+        "LIT": [
+            2,
+            3,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "5": "NUMBER",
+            "2": "STRING",
+            "3": "STRING",
+            "6": "STRING"
+        }
+    },
+    "CXBCCWXI": {
+        "SUBJ": 1,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "J9EJV2S3": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "K71YYDXO": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            4,
+            5
+        ],
+        "LIT": [
+            3
+        ],
+        "LIT_DATATYPE": {
+            "3": "NUMBER"
+        }
+    },
+    "BN8FOG7F": {
+        "SUBJ": 0,
+        "NE": [
+            0
+        ],
+        "LIT": [
+            1,
+            2,
+            3,
+            4
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME",
+            "2": "NUMBER",
+            "3": "NUMBER",
+            "4": "NUMBER"
+        }
+    },
+    "E45F8QW2": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "GINQPZQC": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "1C7N45JA": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "HB00DX4L": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "MANO2PKR": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            3
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "CHZGO92A": {
+        "SUBJ": 2,
+        "NE": [
+            2,
+            3,
+            4,
+            6
+        ],
+        "LIT": [
+            0,
+            1,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "5": "NUMBER",
+            "1": "STRING"
+        }
+    },
+    "I847EKDH": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3
+        ],
+        "LIT": [
+            2
+        ],
+        "LIT_DATATYPE": {
+            "2": "STRING"
+        }
+    },
+    "7EVLH0DV": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            4
+        ],
+        "LIT": [
+            2,
+            3,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "5": "NUMBER",
+            "2": "STRING",
+            "3": "STRING",
+            "6": "STRING"
+        }
+    },
+    "9CSNI7FS": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3,
+            4
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME"
+        }
+    },
+    "UN0JPGPF": {
+        "SUBJ": 1,
+        "NE": [
+            1,
+            2,
+            3
+        ],
+        "LIT": [
+            0,
+            4,
+            5,
+            6,
+            7
+        ],
+        "LIT_DATATYPE": {
+            "0": "NUMBER",
+            "4": "NUMBER",
+            "5": "NUMBER",
+            "6": "NUMBER",
+            "7": "NUMBER"
+        }
+    },
+    "3LG8J4MX": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            3,
+            4
+        ],
+        "LIT": [
+            1,
+            2
+        ],
+        "LIT_DATATYPE": {
+            "1": "NUMBER",
+            "2": "STRING"
+        }
+    },
+    "9BGE5Y4L": {
+        "SUBJ": 1,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "6I7ET24J": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "WRPAQPNC": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "S8UOQYBG": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            4
+        ],
+        "LIT": [
+            3,
+            5
+        ],
+        "LIT_DATATYPE": {
+            "3": "NUMBER",
+            "5": "DATETIME"
+        }
+    },
+    "DXTA1MV8": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            3,
+            4
+        ],
+        "LIT": [
+            2,
+            5,
+            6
+        ],
+        "LIT_DATATYPE": {
+            "2": "NUMBER",
+            "5": "STRING",
+            "6": "STRING"
+        }
+    },
+    "UEJEB27H": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            2,
+            3,
+            4
+        ],
+        "LIT": [
+            1
+        ],
+        "LIT_DATATYPE": {
+            "1": "DATETIME"
+        }
+    },
+    "2VRS31OV": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2
+        ],
+        "LIT": [],
+        "LIT_DATATYPE": {}
+    },
+    "NYFX4M8T": {
+        "SUBJ": 0,
+        "NE": [
+            0,
+            1,
+            2,
+            4,
+            5
+        ],
+        "LIT": [
+            3
+        ],
+        "LIT_DATATYPE": {
+            "3": "NUMBER"
+        }
+    }
+}
