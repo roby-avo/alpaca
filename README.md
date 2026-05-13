@@ -22,7 +22,7 @@ Local Docker setup is intentionally passwordless / no-auth for dev:
 
 Elasticvue is kept intentionally simple here:
 - waits for Elasticsearch health before booting
-- preloads a single local cluster at `http://localhost:9200`
+- lets you add/edit browser-managed clusters through the Elasticvue UI
 
 ## Version Pinning
 
@@ -301,8 +301,20 @@ ORDER BY indexname;
 Open [http://localhost:5601](http://localhost:5601) (Elasticvue).
 
 Elasticvue starts after Elasticsearch is healthy and preloads
-`http://localhost:9200` as the local cluster. The current Elasticsearch CORS
-settings are already enough for this no-auth local setup.
+no admin-managed clusters by default, so use **Add cluster** in the UI and enter
+a URL your browser can reach, for example `http://localhost:9200` for local
+Compose or an SSH-forwarded/VPN Elasticsearch URL for a remote deployment.
+
+If you prefer a preloaded cluster, set `ALPACA_ELASTICVUE_CLUSTERS` in `.env`
+to a JSON array such as:
+
+```bash
+ALPACA_ELASTICVUE_CLUSTERS=[{"name":"alpaca-local","uri":"http://localhost:9200"}]
+```
+
+Preloaded clusters are administrator-managed by Elasticvue and cannot be edited
+directly in the UI. The current Elasticsearch CORS settings are already enough
+for this no-auth local setup.
 
 Quick index inspection commands:
 
