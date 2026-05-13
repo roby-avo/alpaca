@@ -125,6 +125,34 @@ class ApiAuthTests(unittest.TestCase):
         self.assertIn('description.insertAdjacentElement("afterend", wrapper);', response.text)
         self.assertEqual(int(response.headers["content-length"]), len(response.content))
 
+    def test_healthz_uses_lightweight_postgres_ping(self) -> None:
+        store = unittest.mock.Mock()
+        with (
+            patch.dict(
+                os.environ,
+                {"ALPACA_API_TOKEN": TEST_API_TOKEN, "ALPACA_API_TOKEN_HASHES": ""},
+                clear=False,
+            ),
+            patch("src.api.PostgresStore", return_value=store),
+        ):
+            response = self.client.get(
+                "/healthz",
+                headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
+        store.ping.assert_called_once_with()
+        store.count_entities.assert_not_called()
+        store.ensure_schema.assert_not_called()
+        store.ensure_search_indexes.assert_not_called()
+
+    def test_openapi_does_not_expose_database_maintenance_endpoint(self) -> None:
+        response = self.client.get("/openapi.json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("/admin/reindex", response.json()["paths"])
+
 
 class ApiElasticsearchDebugTests(unittest.TestCase):
     def setUp(self) -> None:

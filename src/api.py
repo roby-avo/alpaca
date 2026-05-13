@@ -167,10 +167,6 @@ class DebugLookupResponse(LookupResponse):
     top_k: list[LookupCandidate] = Field(default_factory=list)
 
 
-class ReindexRequest(BaseModel):
-    ensure_search_indexes: bool = True
-
-
 app = FastAPI(
     title="Alpaca Retrieval API",
     version="0.1.0",
@@ -286,13 +282,6 @@ def swagger_ui_html() -> HTMLResponse:
     return HTMLResponse(body, status_code=html.status_code)
 
 
-@app.on_event("startup")
-def startup_init() -> None:
-    store = PostgresStore(resolve_postgres_dsn(None))
-    store.ensure_schema()
-    store.ensure_search_indexes()
-
-
 def get_lookup_service() -> EntityLookupService:
     return EntityLookupService(postgres_dsn=resolve_postgres_dsn(None))
 
@@ -301,12 +290,10 @@ def get_lookup_service() -> EntityLookupService:
 def healthz() -> dict[str, Any]:
     postgres_healthy = False
     postgres_dsn = resolve_postgres_dsn(None)
-    entity_count: int | None = None
     try:
         store = PostgresStore(postgres_dsn)
-        store.ensure_schema()
+        store.ping()
         postgres_healthy = True
-        entity_count = store.count_entities()
     except Exception:
         postgres_healthy = False
 
@@ -314,9 +301,7 @@ def healthz() -> dict[str, Any]:
     return {
         "status": status,
         "search_backend": "postgres",
-        "postgres_dsn": postgres_dsn,
         "postgres_healthy": postgres_healthy,
-        "entities": entity_count,
     }
 
 
@@ -560,25 +545,6 @@ def debug_elasticsearch_search(
 ) -> dict[str, Any]:
     cleaned_index_name = _validate_es_index_name(index_name)
     return _debug_elasticsearch_search(cleaned_index_name, body)
-
-
-@api_router.post("/admin/reindex")
-def admin_reindex(request: ReindexRequest) -> dict[str, Any]:
-    try:
-        store = PostgresStore(resolve_postgres_dsn(None))
-        store.ensure_schema()
-        if request.ensure_search_indexes:
-            store.ensure_search_indexes()
-        status = 0
-    except (PostgresStoreError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    return {
-        "status": "ok" if status == 0 else "error",
-        "exit_code": status,
-        "backend": "postgres",
-        "search_indexes_ensured": bool(request.ensure_search_indexes),
-    }
 
 
 app.include_router(api_router)

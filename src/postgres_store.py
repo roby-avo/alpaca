@@ -627,6 +627,12 @@ class PostgresStore:
             row = cur.fetchone()
         return bool(row and row[0])
 
+    def ping(self) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+
     def _column_data_type(self, conn: Any, *, table_name: str, column_name: str) -> str:
         with conn.cursor() as cur:
             cur.execute(
