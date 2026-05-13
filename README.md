@@ -40,6 +40,13 @@ curl -H "Authorization: Bearer $token" http://localhost:8000/healthz
 `ALPACA_API_TOKEN` remains available as a raw-token fallback for local/private
 deployments, but it must be at least 32 characters.
 
+API startup does not run database schema or index maintenance. Run those as an
+explicit operational job so the web process can start serving immediately:
+
+```bash
+docker compose exec api python -m src.prepare_postgres --ensure-search-indexes
+```
+
 Elasticvue is kept intentionally simple here:
 - waits for Elasticsearch health before booting
 - lets you add/edit browser-managed clusters through the Elasticvue UI
@@ -381,7 +388,6 @@ All API operations require `Authorization: Bearer <token>`.
 - `POST /lookup`
 - `POST /debug/lookup`
 - `POST /debug/elasticsearch/{index_name}/_search`
-- `POST /admin/reindex`
 
 Example debug lookup with context + crosslink hint:
 
