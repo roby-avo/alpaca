@@ -101,6 +101,11 @@ services:
       ALPACA_BOW_OUTPUT_PATH: ${ALPACA_BOW_OUTPUT_PATH:-/workspace/data/output/bow_docs.jsonl.gz}
       ALPACA_POSTGRES_DSN: ${ALPACA_POSTGRES_DSN:-postgresql://postgres@postgres:5432/alpaca}
       ALPACA_ELASTICSEARCH_URL: ${ALPACA_ELASTICSEARCH_URL:-http://elasticsearch:9200}
+      ALPACA_API_TOKEN_HASHES: ${ALPACA_API_TOKEN_HASHES:-}
+      ALPACA_API_TOKEN: ${ALPACA_API_TOKEN:-}
+      ALPACA_ELASTICSEARCH_DEBUG_TIMEOUT_SECONDS: ${ALPACA_ELASTICSEARCH_DEBUG_TIMEOUT_SECONDS:-90}
+      ALPACA_ELASTICSEARCH_DEBUG_MAX_BODY_BYTES: ${ALPACA_ELASTICSEARCH_DEBUG_MAX_BODY_BYTES:-1048576}
+      ALPACA_ELASTICSEARCH_DEBUG_MAX_RESPONSE_BYTES: ${ALPACA_ELASTICSEARCH_DEBUG_MAX_RESPONSE_BYTES:-5242880}
     ports:
       - "${ALPACA_API_PORT:-8000}:8000"
     volumes:
@@ -118,4 +123,8 @@ services:
       - type: bind
         source: ./scripts
         target: /workspace/scripts
+        read_only: true
+      - type: bind
+        source: ./assets
+        target: /workspace/assets
         read_only: true

@@ -9,9 +9,9 @@ Deterministic entity lookup over Wikidata-style data using:
 - Adminer (optional UI for inspecting PostgreSQL data)
 - Elasticvue (UI for inspecting Elasticsearch data)
 
-## Local Stack (No Auth)
+## Local Stack
 
-Local Docker setup is intentionally passwordless / no-auth for dev:
+Local Docker infrastructure is intentionally lightweight for dev:
 - Postgres uses `trust`
 - Elasticsearch security is disabled (`xpack.security.enabled=false`)
 - Elasticvue connects directly to Elasticsearch over CORS
@@ -19,6 +19,26 @@ Local Docker setup is intentionally passwordless / no-auth for dev:
 - Postgres defaults to `max_connections=200` (as requested for compatibility)
 - Postgres keeps defaults for most internals; only `shm_size` and `max_connections`
   are explicitly configured in `.env.example`
+
+The FastAPI service requires Bearer-token authentication for every API operation.
+For production, configure a SHA-256 token digest instead of storing the raw
+client token in `.env`:
+
+```bash
+token="$(openssl rand -hex 32)"
+printf '%s\n' "$token"
+printf '%s' "$token" | shasum -a 256
+```
+
+Put the digest in `ALPACA_API_TOKEN_HASHES`, give clients only the token, then
+use it in Swagger UI via the Authorize button or in HTTP clients:
+
+```bash
+curl -H "Authorization: Bearer $token" http://localhost:8000/healthz
+```
+
+`ALPACA_API_TOKEN` remains available as a raw-token fallback for local/private
+deployments, but it must be at least 32 characters.
 
 Elasticvue is kept intentionally simple here:
 - waits for Elasticsearch health before booting
@@ -58,6 +78,7 @@ docker compose up -d postgres adminer elasticsearch elasticvue api
 
 Useful URLs:
 - API: [http://localhost:8000](http://localhost:8000)
+- Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
 - Adminer (Postgres UI): [http://localhost:8080](http://localhost:8080)
 - Elasticsearch API: [http://localhost:9200](http://localhost:9200)
 - Elasticvue (Elasticsearch UI): [http://localhost:5601](http://localhost:5601)
@@ -314,7 +335,7 @@ ALPACA_ELASTICVUE_CLUSTERS=[{"name":"alpaca-local","uri":"http://localhost:9200"
 
 Preloaded clusters are administrator-managed by Elasticvue and cannot be edited
 directly in the UI. The current Elasticsearch CORS settings are already enough
-for this no-auth local setup.
+for this local inspection setup.
 
 Quick index inspection commands:
 
@@ -354,15 +375,19 @@ Notes:
 
 ## API Endpoints
 
+All API operations require `Authorization: Bearer <token>`.
+
 - `GET /healthz`
 - `POST /lookup`
 - `POST /debug/lookup`
+- `POST /debug/elasticsearch/{index_name}/_search`
 - `POST /admin/reindex`
 
 Example debug lookup with context + crosslink hint:
 
 ```bash
 curl -s http://localhost:8000/debug/lookup \
+  -H "Authorization: Bearer $token" \
   -H 'Content-Type: application/json' \
   -d '{
     "mention":"boston",
@@ -373,6 +398,20 @@ curl -s http://localhost:8000/debug/lookup \
     "top_k":10
   }'
 ```
+
+Example read-only Elasticsearch debug query through the authenticated API:
+
+```bash
+curl -s http://localhost:8000/debug/elasticsearch/alpaca-entities/_search \
+  -H "Authorization: Bearer $token" \
+  -H 'Content-Type: application/json' \
+  -d '{"size":5,"query":{"match_all":{}}}'
+```
+
+The Elasticsearch debug endpoint only proxies `POST /{index}/_search` for a
+single validated index name. It does not expose write, delete, index-management,
+or arbitrary path proxying. Request size, response size, and timeout are bounded
+by the `ALPACA_ELASTICSEARCH_DEBUG_*` settings in `.env.example`.
 
 ## Build a Deterministic Small Dump (from a Local Large Dump)
 

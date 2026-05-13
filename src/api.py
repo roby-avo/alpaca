@@ -1,14 +1,124 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import os
+import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Security
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .common import resolve_postgres_dsn
+from .common import resolve_configured_str, resolve_postgres_dsn
 from .entity_lookup import EntityLookupService
+from .index_postgres_to_elasticsearch import (
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    ELASTICSEARCH_URL_ENV,
+    _normalize_es_url,
+    default_elasticsearch_url,
+)
 from .postgres_store import PostgresStore, PostgresStoreError
+
+
+API_TOKEN_ENV = "ALPACA_API_TOKEN"
+API_TOKEN_HASHES_ENV = "ALPACA_API_TOKEN_HASHES"
+ES_DEBUG_TIMEOUT_ENV = "ALPACA_ELASTICSEARCH_DEBUG_TIMEOUT_SECONDS"
+ES_DEBUG_MAX_BODY_BYTES_ENV = "ALPACA_ELASTICSEARCH_DEBUG_MAX_BODY_BYTES"
+ES_DEBUG_MAX_RESPONSE_BYTES_ENV = "ALPACA_ELASTICSEARCH_DEBUG_MAX_RESPONSE_BYTES"
+MIN_API_TOKEN_LENGTH = 32
+DEFAULT_ES_DEBUG_MAX_BODY_BYTES = 1_048_576
+DEFAULT_ES_DEBUG_MAX_RESPONSE_BYTES = 5_242_880
+_ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
+_ES_INDEX_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,254}$")
+_SHA256_HEX_RE = re.compile(r"^[a-fA-F0-9]{64}$")
+_WWW_AUTHENTICATE = {"WWW-Authenticate": 'Bearer realm="alpaca"'}
+_bearer_scheme = HTTPBearer(
+    scheme_name="BearerAuth",
+    description="Enter your Alpaca API access token. Do not include the Bearer prefix.",
+    auto_error=False,
+)
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _parse_token_hashes(raw_hashes: str) -> tuple[str, ...]:
+    token_hashes: list[str] = []
+    for raw_hash in raw_hashes.replace("\n", ",").split(","):
+        cleaned = raw_hash.strip().lower()
+        if not cleaned:
+            continue
+        if not _SHA256_HEX_RE.match(cleaned):
+            raise ValueError(f"{API_TOKEN_HASHES_ENV} must contain SHA-256 hex digests.")
+        token_hashes.append(cleaned)
+    return tuple(token_hashes)
+
+
+def _configured_api_token_hashes() -> tuple[str, ...]:
+    configured_hashes = os.getenv(API_TOKEN_HASHES_ENV, "").strip()
+    if configured_hashes:
+        return _parse_token_hashes(configured_hashes)
+
+    raw_token = os.getenv(API_TOKEN_ENV, "").strip()
+    if not raw_token:
+        return ()
+    if len(raw_token) < MIN_API_TOKEN_LENGTH:
+        raise ValueError(f"{API_TOKEN_ENV} must be at least {MIN_API_TOKEN_LENGTH} characters.")
+    return (_hash_token(raw_token),)
+
+
+def require_api_token(credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme)) -> None:
+    try:
+        expected_hashes = _configured_api_token_hashes()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="API authentication is misconfigured.",
+        ) from exc
+
+    if not expected_hashes:
+        raise HTTPException(
+            status_code=503,
+            detail="API authentication is not configured.",
+        )
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized.",
+            headers=_WWW_AUTHENTICATE,
+        )
+    token = credentials.credentials.strip()
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized.",
+            headers=_WWW_AUTHENTICATE,
+        )
+
+    token_hash = _hash_token(token)
+    authenticated = False
+    for expected_hash in expected_hashes:
+        authenticated |= hmac.compare_digest(token_hash, expected_hash)
+    if not authenticated:
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized.",
+            headers=_WWW_AUTHENTICATE,
+        )
+
+
+api_router = APIRouter(dependencies=[Depends(require_api_token)])
 
 
 class LookupRequest(BaseModel):
@@ -62,13 +172,118 @@ class ReindexRequest(BaseModel):
 
 
 app = FastAPI(
-    title="alpaca retrieval api",
+    title="Alpaca Retrieval API",
     version="0.1.0",
+    docs_url=None,
+    redoc_url=None,
     description=(
         "Deterministic context-aware entity retrieval API over PostgreSQL "
         "with Postgres-backed entities and query cache."
     ),
 )
+app.mount("/assets", StaticFiles(directory=_ASSETS_DIR), name="assets")
+
+
+_SWAGGER_AVATAR_CSS = """
+<style>
+  .swagger-ui .info {
+    min-height: 150px;
+    padding-right: 170px;
+    position: relative;
+  }
+  .swagger-ui .info .alpaca-description-avatar {
+    position: absolute;
+    right: 8px;
+    top: 18px;
+  }
+  .swagger-ui .info .alpaca-description-avatar img {
+    background: #fff;
+    border: 1px solid #d8dde6;
+    border-radius: 50%;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+    display: block;
+    height: 124px;
+    object-fit: cover;
+    width: 124px;
+  }
+  @media (max-width: 640px) {
+    .swagger-ui .info {
+      min-height: 0;
+      padding-right: 0;
+    }
+    .swagger-ui .info .alpaca-description-avatar {
+      margin-top: 16px;
+      position: static;
+    }
+    .swagger-ui .info .alpaca-description-avatar img {
+      height: 96px;
+      width: 96px;
+    }
+  }
+</style>
+"""
+
+_SWAGGER_AVATAR_SCRIPT = """
+<script>
+  (function () {
+    function mountAlpacaAvatar() {
+      var description = document.querySelector(".swagger-ui .info .description");
+      if (!description || document.querySelector(".alpaca-description-avatar")) {
+        return;
+      }
+      var wrapper = document.createElement("div");
+      wrapper.className = "alpaca-description-avatar";
+      var image = document.createElement("img");
+      image.src = "/assets/alpaca-avatar.png";
+      image.alt = "Alpaca avatar";
+      wrapper.appendChild(image);
+      description.insertAdjacentElement("afterend", wrapper);
+    }
+
+    window.addEventListener("load", mountAlpacaAvatar);
+    new MutationObserver(mountAlpacaAvatar).observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  })();
+</script>
+"""
+
+
+def _custom_openapi() -> dict[str, Any]:
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    schema.setdefault("info", {})["x-logo"] = {"url": "/assets/alpaca-avatar.png"}
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = _custom_openapi  # type: ignore[method-assign]
+
+
+@app.get("/docs", include_in_schema=False)
+def swagger_ui_html() -> HTMLResponse:
+    html = get_swagger_ui_html(
+        openapi_url=app.openapi_url or "/openapi.json",
+        title=f"{app.title} - Swagger UI",
+        swagger_favicon_url="/assets/alpaca-avatar.png",
+        swagger_ui_parameters={
+            "displayRequestDuration": True,
+            "persistAuthorization": False,
+        },
+    )
+    body = (
+        html.body.decode("utf-8")
+        .replace("</head>", f"{_SWAGGER_AVATAR_CSS}</head>")
+        .replace("</body>", f"{_SWAGGER_AVATAR_SCRIPT}</body>")
+    )
+    return HTMLResponse(body, status_code=html.status_code)
 
 
 @app.on_event("startup")
@@ -82,7 +297,7 @@ def get_lookup_service() -> EntityLookupService:
     return EntityLookupService(postgres_dsn=resolve_postgres_dsn(None))
 
 
-@app.get("/healthz")
+@api_router.get("/healthz")
 def healthz() -> dict[str, Any]:
     postgres_healthy = False
     postgres_dsn = resolve_postgres_dsn(None)
@@ -182,7 +397,103 @@ def _run_lookup(request: LookupRequest, *, include_top_k: bool) -> dict[str, Any
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post("/lookup", response_model=LookupResponse)
+def _resolve_float_env(env_var: str, default_value: float) -> float:
+    raw = os.getenv(env_var, "").strip()
+    if not raw:
+        return default_value
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=f"{env_var} must be a number.") from exc
+    if value <= 0:
+        raise HTTPException(status_code=503, detail=f"{env_var} must be greater than zero.")
+    return value
+
+
+def _resolve_int_env(env_var: str, default_value: int) -> int:
+    raw = os.getenv(env_var, "").strip()
+    if not raw:
+        return default_value
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=f"{env_var} must be an integer.") from exc
+    if value <= 0:
+        raise HTTPException(status_code=503, detail=f"{env_var} must be greater than zero.")
+    return value
+
+
+def _validate_es_index_name(index_name: str) -> str:
+    cleaned = index_name.strip()
+    if not _ES_INDEX_RE.match(cleaned):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Elasticsearch index name must be lowercase and contain only "
+                "letters, digits, dot, underscore, or hyphen."
+            ),
+        )
+    if ".." in cleaned:
+        raise HTTPException(status_code=422, detail="Elasticsearch index name cannot contain '..'.")
+    return cleaned
+
+
+def _debug_elasticsearch_search(index_name: str, body: Mapping[str, Any]) -> dict[str, Any]:
+    base_url = _normalize_es_url(
+        resolve_configured_str(None, ELASTICSEARCH_URL_ENV, default_elasticsearch_url())
+    )
+    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    max_body_bytes = _resolve_int_env(
+        ES_DEBUG_MAX_BODY_BYTES_ENV,
+        DEFAULT_ES_DEBUG_MAX_BODY_BYTES,
+    )
+    if len(payload) > max_body_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Elasticsearch debug query body exceeds {max_body_bytes} bytes.",
+        )
+
+    timeout_seconds = _resolve_float_env(
+        ES_DEBUG_TIMEOUT_ENV,
+        float(DEFAULT_REQUEST_TIMEOUT_SECONDS),
+    )
+    request = Request(
+        f"{base_url}/{index_name}/_search",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    max_response_bytes = _resolve_int_env(
+        ES_DEBUG_MAX_RESPONSE_BYTES_ENV,
+        DEFAULT_ES_DEBUG_MAX_RESPONSE_BYTES,
+    )
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            response_body = response.read(max_response_bytes + 1)
+    except HTTPError as exc:
+        detail_body = exc.read(max_response_bytes + 1).decode("utf-8", errors="replace")
+        status_code = int(exc.code) if 400 <= int(exc.code) < 500 else 502
+        raise HTTPException(status_code=status_code, detail=detail_body[:max_response_bytes]) from exc
+    except URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Elasticsearch request failed: {exc.reason}") from exc
+
+    if len(response_body) > max_response_bytes:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Elasticsearch response exceeds {max_response_bytes} bytes.",
+        )
+    if not response_body:
+        return {}
+    try:
+        parsed = json.loads(response_body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail="Elasticsearch returned invalid JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail="Elasticsearch returned a non-object JSON response.")
+    return parsed
+
+
+@api_router.post("/lookup", response_model=LookupResponse)
 def lookup_entity(request: LookupRequest) -> LookupResponse:
     raw = _run_lookup(request, include_top_k=False)
     top1_raw = raw.get("top1")
@@ -202,7 +513,7 @@ def lookup_entity(request: LookupRequest) -> LookupResponse:
     )
 
 
-@app.post("/debug/lookup", response_model=DebugLookupResponse)
+@api_router.post("/debug/lookup", response_model=DebugLookupResponse)
 def debug_lookup_entity(request: LookupRequest) -> DebugLookupResponse:
     raw = _run_lookup(request, include_top_k=True)
     top1_raw = raw.get("top1")
@@ -229,7 +540,29 @@ def debug_lookup_entity(request: LookupRequest) -> DebugLookupResponse:
     )
 
 
-@app.post("/admin/reindex")
+@api_router.post("/debug/elasticsearch/{index_name}/_search")
+def debug_elasticsearch_search(
+    index_name: str,
+    body: dict[str, Any] = Body(
+        ...,
+        examples=[
+            {
+                "query": {
+                    "multi_match": {
+                        "query": "Rome",
+                        "fields": ["label^4", "labels^2", "aliases", "context_string"],
+                    }
+                },
+                "size": 5,
+            }
+        ],
+    ),
+) -> dict[str, Any]:
+    cleaned_index_name = _validate_es_index_name(index_name)
+    return _debug_elasticsearch_search(cleaned_index_name, body)
+
+
+@api_router.post("/admin/reindex")
 def admin_reindex(request: ReindexRequest) -> dict[str, Any]:
     try:
         store = PostgresStore(resolve_postgres_dsn(None))
@@ -246,3 +579,6 @@ def admin_reindex(request: ReindexRequest) -> dict[str, Any]:
         "backend": "postgres",
         "search_indexes_ensured": bool(request.ensure_search_indexes),
     }
+
+
+app.include_router(api_router)
