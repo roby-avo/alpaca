@@ -535,7 +535,7 @@ def debug_elasticsearch_search(
                 "query": {
                     "multi_match": {
                         "query": "Rome",
-                        "fields": ["label^4", "labels^2", "aliases", "context_string"],
+                        "fields": ["label^4", "labels^2", "aliases", "description", "context_string"],
                     }
                 },
                 "size": 5,

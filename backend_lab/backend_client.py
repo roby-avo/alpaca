@@ -95,7 +95,7 @@ class BackendHttpClient:
             {
                 "multi_match": {
                     "query": query_text,
-                    "fields": ["label^5", "labels^3", "aliases^3", "context_string"],
+                    "fields": ["label^5", "labels^3", "aliases^3", "description^1.5", "context_string"],
                 }
             }
         ]
