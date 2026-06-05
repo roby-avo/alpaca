@@ -86,6 +86,35 @@ class BackendLabTableAwareTests(unittest.TestCase):
         self.assertEqual(payload["fine_hints"], ["LANDMARK"])
         self.assertIn("Lake Malawi", str(es_query))
 
+    def test_elasticsearch_query_searches_description(self) -> None:
+        es_query = build_es_query_from_lookup_payload(
+            {
+                "mention": "Malawi",
+                "mention_context": ["lake in east-central Africa"],
+                "coarse_hints": [],
+                "fine_hints": [],
+                "item_category_filters": [],
+                "top_k": 10,
+            },
+        )
+
+        variant_clauses = es_query["query"]["bool"]["must"][0]["bool"]["should"]
+        variant_fields = [
+            clause["multi_match"]["fields"]
+            for clause in variant_clauses
+            if "multi_match" in clause
+        ]
+        context_clauses = es_query["query"]["bool"]["should"]
+
+        self.assertIn("description^1.5", variant_fields[0])
+        self.assertTrue(
+            any(
+                clause.get("match", {}).get("description", {}).get("query")
+                == "lake in east-central Africa"
+                for clause in context_clauses
+            )
+        )
+
     def test_unsupported_qualifier_penalizes_related_entity(self) -> None:
         context = build_cell_context(
             self.config.dataset_root,

@@ -368,7 +368,7 @@ def build_es_query_from_lookup_payload(
                 {
                     "multi_match": {
                         "query": text,
-                        "fields": ["label^8", "labels^4", "aliases^4"],
+                        "fields": ["label^8", "labels^4", "aliases^4", "description^1.5"],
                         "type": "best_fields",
                         "boost": 2.0 * boost_scale,
                     }
@@ -399,6 +399,7 @@ def build_es_query_from_lookup_payload(
         token_count = len(_tokenize(value))
         context_boost = 1.5 + (4.0 * max(0.0, min(1.0, weight)))
         should.append({"match": {"context_string": {"query": value, "boost": context_boost}}})
+        should.append({"match": {"description": {"query": value, "boost": max(1.0, context_boost * 0.75)}}})
         if token_count <= 5:
             label_boost = 1.5 + (5.0 * max(0.0, min(1.0, weight)))
             should.append({"match_phrase": {"label": {"query": value, "boost": label_boost}}})
@@ -406,7 +407,7 @@ def build_es_query_from_lookup_payload(
                 {
                     "multi_match": {
                         "query": value,
-                        "fields": ["label^6", "labels^3", "aliases^3"],
+                        "fields": ["label^6", "labels^3", "aliases^3", "description^1.25"],
                         "type": "best_fields",
                         "boost": max(1.5, label_boost - 1.0),
                     }

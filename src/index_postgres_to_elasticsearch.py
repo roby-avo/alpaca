@@ -408,7 +408,11 @@ def _build_index_payload() -> dict[str, Any]:
                         }
                     },
                 },
-                "description": {"type": "text", "index": False},
+                "description": {
+                    "type": "text",
+                    "analyzer": "alpaca_text",
+                    "norms": False,
+                },
                 "aliases": {
                     "type": "text",
                     "analyzer": "alpaca_text",
