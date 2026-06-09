@@ -190,26 +190,40 @@ single table used for parsing/intermediate storage is also the export source.
 
 The production Elasticsearch mapping is intentionally lean:
 - indexed text stays focused on `label`, secondary `labels`, `aliases`, and compact triples-backed `context_string`
-- `description`, `types`, `wikipedia_url`, and `dbpedia_url` are still returned in `_source`, but are not indexed
+- `qid`, compact `wikipedia_url`, and compact `dbpedia_url` are indexed for exact lookup
+- `description` is indexed as text; `types` are still returned in `_source`, but are not indexed
+- `coarse_type` and `fine_type` are re-evaluated while reading rows from PostgreSQL, so NER hierarchy changes are applied on reindex
 - secondary names are clipped before export (defaults: `--max-indexed-labels 12`, `--max-indexed-aliases 24`)
 - graph context is clipped before export (default: `--max-context-chars 256`)
 
-Start required services first:
+Use the helper script for the normal Docker Compose indexing run. It starts
+`postgres`, `elasticsearch`, and `api`, then runs the indexer inside the `api`
+container with Compose-network endpoints:
+
+```bash
+./scripts/run_postgres_to_elasticsearch.sh \
+  --index-name alpaca-entities \
+  --recreate-index \
+  --workers 4 \
+  --batch-size 10000 \
+  --bulk-actions 2000 
+```
+
+Use `--recreate-index` after mapping changes, including the `qid`,
+`wikipedia_url`, and `dbpedia_url` exact-match indexing change. Without it,
+Elasticsearch keeps the old field mappings.
+
+Equivalent explicit Docker Compose launch:
 
 ```bash
 docker compose up -d postgres elasticsearch api
-```
 
-Recreate and fully mirror the index:
-
-```bash
 docker compose exec api python -m src.index_postgres_to_elasticsearch \
   --index-name alpaca-entities \
   --recreate-index \
   --workers 4 \
   --batch-size 10000 \
-  --bulk-actions 2000 \
-  --skip-count-total
+  --bulk-actions 2000 
 ```
 
 Inside the `api` container, the default endpoints are the Docker Compose service
@@ -229,16 +243,6 @@ Note: use `docker compose exec` (without `-T`) to keep TTY enabled so `tqdm`
 renders the live progress bar.
 For a full 100M+ row mirror, `--skip-count-total` is recommended so indexing
 starts immediately instead of paying for an upfront `COUNT(*)`.
-
-Local helper script (same module):
-
-```bash
-./scripts/run_postgres_to_elasticsearch.sh --index-name alpaca-entities --recreate-index --skip-count-total
-```
-
-The helper starts `postgres`, `elasticsearch`, and `api`, then runs the indexer
-inside the `api` container on the Docker Compose network with explicit
-Compose-network endpoints for Postgres and Elasticsearch.
 
 ## PostgreSQL Search / Matching Logic
 
@@ -354,6 +358,22 @@ curl -s http://localhost:9200/_cat/indices?v
 curl -s http://localhost:9200/<index_name>/_search \
   -H 'Content-Type: application/json' \
   -d '{"size":5,"query":{"match_all":{}}}'
+```
+
+Exact QID lookup:
+
+```bash
+curl -s http://localhost:9200/alpaca-entities/_search \
+  -H 'Content-Type: application/json' \
+  -d '{"size":1,"query":{"term":{"qid":"Q42"}}}'
+```
+
+Exact compact Wikipedia / DBpedia lookup:
+
+```bash
+curl -s http://localhost:9200/alpaca-entities/_search \
+  -H 'Content-Type: application/json' \
+  -d '{"size":5,"query":{"bool":{"should":[{"term":{"wikipedia_url":"Douglas_Adams"}},{"term":{"dbpedia_url":"Douglas_Adams"}}],"minimum_should_match":1}}}'
 ```
 
 ## Storage Estimation (Sample + Replicate)
