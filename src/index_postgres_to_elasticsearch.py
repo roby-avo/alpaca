@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .common import resolve_configured_str, resolve_postgres_dsn, running_in_container, tqdm
+from .ner_typing import infer_ner_types
 from .postgres_store import PostgresStore
 try:  # pragma: no cover - import depends on runtime environment
     import psycopg  # type: ignore
@@ -378,7 +379,7 @@ def _build_index_payload() -> dict[str, Any]:
         "mappings": {
             "dynamic": "strict",
             "properties": {
-                "qid": {"type": "keyword", "index": False, "doc_values": False},
+                "qid": {"type": "keyword", "doc_values": False},
                 "label": {
                     "type": "text",
                     "analyzer": "alpaca_text",
@@ -452,12 +453,10 @@ def _build_index_payload() -> dict[str, Any]:
                 # Compact refs from Postgres, without full URL prefixes.
                 "wikipedia_url": {
                     "type": "keyword",
-                    "index": False,
                     "doc_values": False,
                 },
                 "dbpedia_url": {
                     "type": "keyword",
-                    "index": False,
                     "doc_values": False,
                 },
                 "updated_at": {"type": "date"},
@@ -616,6 +615,49 @@ def _as_iso_datetime(raw: Any) -> str:
     return ""
 
 
+def _synthetic_claims_from_type_qids(type_qids: Sequence[str]) -> dict[str, Any] | None:
+    clean_qids = _clean_terms(list(type_qids))
+    if not clean_qids:
+        return None
+    return {
+        "P31": [
+            {
+                "mainsnak": {
+                    "snaktype": "value",
+                    "datavalue": {"value": {"id": qid}},
+                }
+            }
+            for qid in clean_qids
+        ]
+    }
+
+
+def _recompute_ner_type_fields(
+    *,
+    qid: str,
+    label: str,
+    labels: Sequence[str],
+    aliases: Sequence[str],
+    description: str,
+    type_qids: Sequence[str],
+) -> tuple[str, str]:
+    labels_for_typing = {"en": label}
+    for index, value in enumerate(labels):
+        labels_for_typing[f"x-label-{index}"] = value
+    aliases_for_typing = {"en": list(aliases)}
+    descriptions_for_typing = {"en": description} if description else {}
+    coarse_types, fine_types, _source = infer_ner_types(
+        entity_id=qid,
+        labels=labels_for_typing,
+        aliases=aliases_for_typing,
+        descriptions=descriptions_for_typing,
+        claims=_synthetic_claims_from_type_qids(type_qids),
+    )
+    coarse_type = coarse_types[0] if coarse_types else ""
+    fine_type = fine_types[0] if fine_types else ""
+    return coarse_type, fine_type
+
+
 def _row_to_document(
     row: Sequence[Any],
     *,
@@ -644,16 +686,26 @@ def _row_to_document(
     has_context_column = len(row) >= 15
     shift = 1 if has_context_column else 0
     context_string = row[6] if has_context_column and isinstance(row[6], str) else ""
+    description = row[4] if isinstance(row[4], str) else ""
+    type_qids = _clean_terms(row[5])
+    coarse_type, fine_type = _recompute_ner_type_fields(
+        qid=qid,
+        label=clean_label,
+        labels=labels,
+        aliases=aliases,
+        description=description,
+        type_qids=type_qids,
+    )
 
     doc: dict[str, Any] = {
         "qid": qid,
         "label": clean_label,
         "labels": labels,
         "aliases": aliases,
-        "types": _clean_terms(row[5]),
+        "types": type_qids,
         "context_string": context_string,
-        "coarse_type": row[6 + shift] if isinstance(row[6 + shift], str) else "",
-        "fine_type": row[7 + shift] if isinstance(row[7 + shift], str) else "",
+        "coarse_type": coarse_type,
+        "fine_type": fine_type,
         "item_category": row[8 + shift] if isinstance(row[8 + shift], str) else "",
         "popularity": _as_float(row[9 + shift]),
         "prior": _as_float(row[10 + shift]),
@@ -661,7 +713,6 @@ def _row_to_document(
         "wikipedia_url": row[11 + shift] if isinstance(row[11 + shift], str) else "",
         "dbpedia_url": row[12 + shift] if isinstance(row[12 + shift], str) else "",
     }
-    description = row[4] if isinstance(row[4], str) else ""
     if description:
         doc["description"] = description
     updated_at = _as_iso_datetime(row[13 + shift])
