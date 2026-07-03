@@ -423,6 +423,76 @@ def _validate_es_index_name(index_name: str) -> str:
     return cleaned
 
 
+def _collect_es_response_type_qids(response: Mapping[str, Any]) -> list[str]:
+    hits = response.get("hits")
+    if not isinstance(hits, Mapping):
+        return []
+    raw_hits = hits.get("hits")
+    if not isinstance(raw_hits, list):
+        return []
+
+    type_qids: list[str] = []
+    seen: set[str] = set()
+    for hit in raw_hits:
+        if not isinstance(hit, Mapping):
+            continue
+        source = hit.get("_source")
+        if not isinstance(source, Mapping):
+            continue
+        raw_types = source.get("types")
+        if not isinstance(raw_types, list):
+            continue
+        for raw_type in raw_types:
+            if not isinstance(raw_type, str):
+                continue
+            cleaned = raw_type.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            type_qids.append(cleaned)
+    return type_qids
+
+
+def _hydrate_es_response_types(response: dict[str, Any], type_labels: Mapping[str, str]) -> dict[str, Any]:
+    hits = response.get("hits")
+    if not isinstance(hits, Mapping):
+        return response
+    raw_hits = hits.get("hits")
+    if not isinstance(raw_hits, list):
+        return response
+
+    for hit in raw_hits:
+        if not isinstance(hit, Mapping):
+            continue
+        source = hit.get("_source")
+        if not isinstance(source, dict):
+            continue
+        raw_types = source.get("types")
+        if not isinstance(raw_types, list):
+            continue
+        hydrated_types = [
+            {"id": cleaned, "name": type_labels.get(cleaned)}
+            for raw_type in raw_types
+            if isinstance(raw_type, str)
+            for cleaned in [raw_type.strip()]
+            if cleaned
+        ]
+        source["types"] = hydrated_types
+    return response
+
+
+def _resolve_es_response_type_labels(response: dict[str, Any]) -> dict[str, str]:
+    type_qids = _collect_es_response_type_qids(response)
+    if not type_qids:
+        return {}
+    try:
+        store = PostgresStore(resolve_postgres_dsn(None))
+        return store.resolve_type_labels(type_qids)
+    except Exception:
+        # Debug search should remain usable even when optional type-label enrichment is unavailable.
+        return {}
+
+
 def _debug_elasticsearch_search(index_name: str, body: Mapping[str, Any]) -> dict[str, Any]:
     base_url = _normalize_es_url(
         resolve_configured_str(None, ELASTICSEARCH_URL_ENV, default_elasticsearch_url())
@@ -475,7 +545,8 @@ def _debug_elasticsearch_search(index_name: str, body: Mapping[str, Any]) -> dic
         raise HTTPException(status_code=502, detail="Elasticsearch returned invalid JSON.") from exc
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=502, detail="Elasticsearch returned a non-object JSON response.")
-    return parsed
+    type_labels = _resolve_es_response_type_labels(parsed)
+    return _hydrate_es_response_types(parsed, type_labels)
 
 
 @api_router.post("/lookup", response_model=LookupResponse)

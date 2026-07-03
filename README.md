@@ -437,7 +437,10 @@ curl -s http://localhost:8000/debug/elasticsearch/alpaca-entities/_search \
 The Elasticsearch debug endpoint only proxies `POST /{index}/_search` for a
 single validated index name. It does not expose write, delete, index-management,
 or arbitrary path proxying. Request size, response size, and timeout are bounded
-by the `ALPACA_ELASTICSEARCH_DEBUG_*` settings in `.env.example`.
+by the `ALPACA_ELASTICSEARCH_DEBUG_*` settings in `.env.example`. When hits
+include `_source.types` QIDs, the API resolves all returned type IDs in one
+Postgres lookup filtered to `item_category = TYPE` and returns each type as
+`{"id": "Q...", "name": "canonical label"}`. Unresolved type names are `null`.
 
 ## Build a Deterministic Small Dump (from a Local Large Dump)
 

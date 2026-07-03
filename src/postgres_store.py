@@ -1107,6 +1107,39 @@ class PostgresStore:
                     resolved[qid] = label
         return resolved
 
+    def resolve_type_labels(self, qids: Sequence[str]) -> dict[str, str]:
+        normalized_qids: list[str] = []
+        seen: set[str] = set()
+        for qid in qids:
+            if not isinstance(qid, str):
+                continue
+            cleaned = qid.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            normalized_qids.append(cleaned)
+        if not normalized_qids:
+            return {}
+
+        sql = """
+        SELECT qid, label
+        FROM entities
+        WHERE qid = ANY(%s)
+          AND UPPER(item_category) = 'TYPE'
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (list(normalized_qids),))
+                rows = cur.fetchall()
+
+        resolved: dict[str, str] = {}
+        for qid, label in rows:
+            if not isinstance(qid, str):
+                continue
+            if isinstance(label, str) and label.strip():
+                resolved[qid] = label.strip()
+        return resolved
+
     def build_context_strings(
         self,
         qids: Sequence[str],

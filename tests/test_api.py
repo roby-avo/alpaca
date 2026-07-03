@@ -197,5 +197,65 @@ class ApiElasticsearchDebugTests(unittest.TestCase):
         search.assert_called_once_with("alpaca-entities", request_body)
 
 
+class ApiElasticsearchTypeLabelTests(unittest.TestCase):
+    def test_collect_es_response_type_qids_dedupes_across_hits(self) -> None:
+        response = {
+            "hits": {
+                "hits": [
+                    {"_source": {"qid": "Q1", "types": ["Q5", "Q515", "Q5", " "]}},
+                    {"_source": {"qid": "Q2", "types": ["Q515", "Q6256"]}},
+                    {"_source": {"qid": "Q3", "types": "Q5"}},
+                ]
+            }
+        }
+
+        self.assertEqual(api._collect_es_response_type_qids(response), ["Q5", "Q515", "Q6256"])
+
+    def test_hydrate_es_response_types_replaces_type_ids_with_id_name_objects(self) -> None:
+        response = {
+            "hits": {
+                "hits": [
+                    {"_source": {"qid": "Q1", "types": ["Q5", "Q515"]}},
+                    {"_source": {"qid": "Q2", "types": ["Q6256"]}},
+                ]
+            }
+        }
+
+        enriched = api._hydrate_es_response_types(
+            response,
+            {"Q5": "human", "Q515": "city"},
+        )
+
+        self.assertEqual(
+            enriched["hits"]["hits"][0]["_source"]["types"],
+            [{"id": "Q5", "name": "human"}, {"id": "Q515", "name": "city"}],
+        )
+        self.assertEqual(
+            enriched["hits"]["hits"][1]["_source"]["types"],
+            [{"id": "Q6256", "name": None}],
+        )
+
+    def test_resolve_es_response_type_labels_uses_one_batched_type_lookup(self) -> None:
+        response = {
+            "hits": {
+                "hits": [
+                    {"_source": {"qid": "Q1", "types": ["Q5", "Q515"]}},
+                    {"_source": {"qid": "Q2", "types": ["Q5", "Q6256"]}},
+                ]
+            }
+        }
+        store = unittest.mock.Mock()
+        store.resolve_type_labels.return_value = {"Q5": "human", "Q515": "city"}
+
+        with (
+            patch("src.api.resolve_postgres_dsn", return_value="postgresql://example/db"),
+            patch("src.api.PostgresStore", return_value=store),
+        ):
+            labels = api._resolve_es_response_type_labels(response)
+
+        self.assertEqual(labels, {"Q5": "human", "Q515": "city"})
+        store.resolve_type_labels.assert_called_once_with(["Q5", "Q515", "Q6256"])
+
+
 if __name__ == "__main__":
     unittest.main()
