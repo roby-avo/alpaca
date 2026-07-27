@@ -459,7 +459,16 @@ def _build_index_payload() -> dict[str, Any]:
                     "type": "keyword",
                     "normalizer": "alpaca_keyword_lower",
                 },
+                "ner_secondary_types": {
+                    "type": "keyword",
+                    "normalizer": "alpaca_keyword_lower",
+                },
                 "ner_facets": {"type": "flattened"},
+                "ner_specificity_level": {"type": "byte"},
+                "ner_retrieval_path": {
+                    "type": "keyword",
+                    "normalizer": "alpaca_keyword_lower",
+                },
                 "ner_retrieval_key": {"type": "keyword"},
                 "ner_retrieval_tags": {
                     "type": "keyword",
@@ -467,7 +476,9 @@ def _build_index_payload() -> dict[str, Any]:
                 },
                 "ner_confidence": {"type": "half_float"},
                 "ner_specific_type_confidence": {"type": "half_float"},
+                "ner_classifier_name": {"type": "keyword"},
                 "ner_classifier_version": {"type": "keyword"},
+                "ner_taxonomy_version": {"type": "keyword"},
                 "item_category": {
                     "type": "keyword",
                     "normalizer": "alpaca_keyword_lower",
@@ -669,7 +680,7 @@ def _row_to_document(
         max_terms=max_indexed_aliases,
         excluded={clean_label, *labels},
     )
-    has_ner_columns = len(row) >= 25
+    has_ner_columns = len(row) >= 30
     has_context_column = len(row) == 15
     shift = 1 if has_context_column else 0
     context_string = row[6] if has_context_column and isinstance(row[6], str) else ""
@@ -702,8 +713,10 @@ def _row_to_document(
         optional_string_fields = {
             "ner_subtype": row[16],
             "ner_specific_type": row[17],
-            "ner_retrieval_key": row[20],
-            "ner_classifier_version": row[24],
+            "ner_retrieval_key": row[23],
+            "ner_classifier_name": row[27],
+            "ner_classifier_version": row[28],
+            "ner_taxonomy_version": row[29],
         }
         for field_name, value in optional_string_fields.items():
             if isinstance(value, str) and value:
@@ -711,15 +724,23 @@ def _row_to_document(
         specific_types = _clean_terms(row[18])
         if specific_types:
             doc["ner_specific_types"] = specific_types
-        if isinstance(row[19], Mapping) and row[19]:
-            doc["ner_facets"] = dict(row[19])
-        retrieval_tags = _clean_terms(row[21])
+        secondary_types = _clean_terms(row[19])
+        if secondary_types:
+            doc["ner_secondary_types"] = secondary_types
+        if isinstance(row[20], Mapping) and row[20]:
+            doc["ner_facets"] = dict(row[20])
+        if isinstance(row[21], int):
+            doc["ner_specificity_level"] = row[21]
+        retrieval_path = _clean_terms(row[22])
+        if retrieval_path:
+            doc["ner_retrieval_path"] = retrieval_path
+        retrieval_tags = _clean_terms(row[24])
         if retrieval_tags:
             doc["ner_retrieval_tags"] = retrieval_tags
-        if isinstance(row[22], (int, float)):
-            doc["ner_confidence"] = float(row[22])
-        if isinstance(row[23], (int, float)):
-            doc["ner_specific_type_confidence"] = float(row[23])
+        if isinstance(row[25], (int, float)):
+            doc["ner_confidence"] = float(row[25])
+        if isinstance(row[26], (int, float)):
+            doc["ner_specific_type_confidence"] = float(row[26])
     updated_at = _as_iso_datetime(row[13 + shift])
     if updated_at:
         doc["updated_at"] = updated_at
@@ -761,23 +782,33 @@ def _iter_documents_from_postgres(
         ner.subtype,
         ner.specific_type,
         ner.specific_types,
+        ner.secondary_types,
         ner.facets,
+        ner.specificity_level,
+        ner.retrieval_path,
         ner.retrieval_key,
         ner.retrieval_tags,
         ner.confidence,
         ner.specific_type_confidence,
-        ner.classifier_version
+        ner.classifier_name,
+        ner.classifier_version,
+        ner.taxonomy_version
     """ if has_ner_table and table_name_tail == "entities" else """
         NULL::text,
         NULL::text,
         NULL::text,
         NULL::text,
         NULL::text[],
+        NULL::text[],
         NULL::jsonb,
+        NULL::smallint,
+        NULL::text[],
         NULL::text,
         NULL::text[],
         NULL::real,
         NULL::real,
+        NULL::text,
+        NULL::text,
         NULL::text
     """
     ner_join_sql = (

@@ -26,7 +26,13 @@ class ClassifyPostgresEntitiesTests(unittest.TestCase):
         self.assertEqual(result[1], "CREATIVE_WORK")
         self.assertEqual(result[2], "FILM")
         self.assertEqual(result[4], "SWORD_AND_SANDAL_FILM")
-        self.assertEqual(result[11], REQUIRED_CLASSIFIER_VERSION)
+        self.assertEqual(result[8], 4)
+        self.assertEqual(
+            result[9],
+            ["CREATIVE_WORK", "FILM", "SWORD_AND_SANDAL_FILM"],
+        )
+        self.assertEqual(result[15], REQUIRED_CLASSIFIER_VERSION)
+        self.assertEqual(result[16], "1.0.0/0.3.1")
 
     def test_classify_row_abstains_without_type_anchor(self) -> None:
         result = _classify_row(("Q999999999", "Unknown", "untyped item", [], [], [], []))

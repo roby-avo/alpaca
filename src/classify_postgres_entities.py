@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
+from importlib.resources import files
 from typing import Any
 
 from .common import resolve_postgres_dsn, tqdm
@@ -31,7 +33,6 @@ DEFAULT_NER_TABLE = "entity_ner"
 DEFAULT_BATCH_SIZE = 20_000
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKER_CLASSIFIER: Any = None
-_ENTITY_ID_RE = re.compile(r"^[QP]\d+$")
 
 
 def _positive_int(raw: str) -> int:
@@ -91,6 +92,20 @@ def _classifier() -> Any:
     return _WORKER_CLASSIFIER
 
 
+@lru_cache(maxsize=1)
+def _taxonomy_version() -> str:
+    fine_resource = files("wikidata_ner").joinpath("data/B_full_rule_spec.json")
+    refinement_resource = files("wikidata_ner").joinpath("data/subtype_rules.json")
+    with fine_resource.open("r", encoding="utf-8") as stream:
+        fine_payload = json.load(stream)
+    with refinement_resource.open("r", encoding="utf-8") as stream:
+        refinement_payload = json.load(stream)
+    return (
+        f"{fine_payload.get('version', 'unknown')}/"
+        f"{refinement_payload.get('version', 'unknown')}"
+    )
+
+
 @lru_cache(maxsize=100_000)
 def _predict_without_description(
     type_names: tuple[str, ...],
@@ -132,11 +147,6 @@ def _classify_row(row: tuple[Any, ...]) -> tuple[Any, ...] | None:
     ]
     type_names = tuple(value["name"] for value in direct_types)
     ancestor_names = tuple(value["name"] for value in ancestor_types)
-    if not any(
-        name and not _ENTITY_ID_RE.fullmatch(name)
-        for name in (*type_names, *ancestor_names)
-    ):
-        return None
     if description:
         prediction = _classifier().predict(
             qid=qid,
@@ -157,7 +167,10 @@ def _classify_row(row: tuple[Any, ...]) -> tuple[Any, ...] | None:
         prediction.subtype,
         prediction.specific_type,
         list(prediction.specific_types),
+        list(prediction.secondary_types),
         dict(prediction.facets),
+        int(prediction.specificity_level),
+        list(prediction.retrieval_path),
         retrieval.get("ner_retrieval_key"),
         list(retrieval.get("ner_retrieval_tags") or ()),
         float(prediction.confidence),
@@ -166,12 +179,16 @@ def _classify_row(row: tuple[Any, ...]) -> tuple[Any, ...] | None:
             if prediction.specific_type_confidence is not None
             else None
         ),
+        CLASSIFIER_DISTRIBUTION,
         REQUIRED_CLASSIFIER_VERSION,
+        _taxonomy_version(),
     )
 
 
-def _ensure_schema(conn: Any, *, ner_table: str) -> None:
+def _ensure_schema(conn: Any, *, source_table: str, ner_table: str) -> None:
+    source_ident = _quote_identifier(source_table)
     ner_ident = _quote_identifier(ner_table)
+    stage = f"ner:{source_table}:{REQUIRED_CLASSIFIER_VERSION}"
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -182,12 +199,17 @@ def _ensure_schema(conn: Any, *, ner_table: str) -> None:
                 subtype TEXT,
                 specific_type TEXT,
                 specific_types TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+                secondary_types TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
                 facets JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                specificity_level SMALLINT NOT NULL DEFAULT 0,
+                retrieval_path TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
                 retrieval_key TEXT,
                 retrieval_tags TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
                 confidence REAL NOT NULL,
                 specific_type_confidence REAL,
+                classifier_name TEXT NOT NULL DEFAULT '{CLASSIFIER_DISTRIBUTION}',
                 classifier_version TEXT NOT NULL,
+                taxonomy_version TEXT NOT NULL DEFAULT '',
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
@@ -198,8 +220,85 @@ def _ensure_schema(conn: Any, *, ner_table: str) -> None:
                 metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+
+            ALTER TABLE {ner_ident}
+                ADD COLUMN IF NOT EXISTS secondary_types
+                    TEXT[] NOT NULL DEFAULT ARRAY[]::text[];
+            ALTER TABLE {ner_ident}
+                ADD COLUMN IF NOT EXISTS specificity_level
+                    SMALLINT NOT NULL DEFAULT 0;
+            ALTER TABLE {ner_ident}
+                ADD COLUMN IF NOT EXISTS retrieval_path
+                    TEXT[] NOT NULL DEFAULT ARRAY[]::text[];
+            ALTER TABLE {ner_ident}
+                ADD COLUMN IF NOT EXISTS classifier_name
+                    TEXT NOT NULL DEFAULT '{CLASSIFIER_DISTRIBUTION}';
+            ALTER TABLE {ner_ident}
+                ADD COLUMN IF NOT EXISTS taxonomy_version
+                    TEXT NOT NULL DEFAULT '';
+
+            COMMENT ON TABLE {ner_ident} IS
+                'Successful deterministic item classifications produced by '
+                '{CLASSIFIER_DISTRIBUTION}=={REQUIRED_CLASSIFIER_VERSION}. '
+                'Rows without a confident classification are represented as '
+                'ABSTAINED by entities_with_ner after the classification pass completes.';
             """
         )
+        cur.execute("SELECT to_regclass(%s)", (source_table,))
+        source_exists = bool((cur.fetchone() or (None,))[0])
+        if source_exists and source_table == DEFAULT_SOURCE_TABLE and ner_table == DEFAULT_NER_TABLE:
+            cur.execute(
+                f"""
+                CREATE OR REPLACE VIEW entities_with_ner AS
+                SELECT
+                    e.qid,
+                    e.label,
+                    e.labels,
+                    e.aliases,
+                    e.description,
+                    e.types,
+                    e.ancestor_types,
+                    CASE
+                        WHEN e.qid NOT LIKE 'Q%' THEN 'NOT_APPLICABLE'
+                        WHEN n.qid IS NOT NULL THEN 'CLASSIFIED'
+                        WHEN COALESCE(
+                            (state.metadata ->> 'complete')::boolean,
+                            FALSE
+                        ) THEN 'ABSTAINED'
+                        ELSE 'PENDING'
+                    END AS ner_status,
+                    n.coarse_type AS ner_coarse_type,
+                    n.fine_type AS ner_fine_type,
+                    n.subtype AS ner_subtype,
+                    n.specific_type AS ner_specific_type,
+                    n.specific_types AS ner_specific_types,
+                    n.secondary_types AS ner_secondary_types,
+                    n.facets AS ner_facets,
+                    n.specificity_level AS ner_specificity_level,
+                    n.retrieval_path AS ner_retrieval_path,
+                    n.retrieval_key AS ner_retrieval_key,
+                    n.retrieval_tags AS ner_retrieval_tags,
+                    n.confidence AS ner_confidence,
+                    n.specific_type_confidence AS ner_specific_type_confidence,
+                    n.classifier_name AS ner_classifier_name,
+                    n.classifier_version AS ner_classifier_version,
+                    n.taxonomy_version AS ner_taxonomy_version,
+                    e.item_category,
+                    e.popularity,
+                    e.prior,
+                    e.wikipedia_url,
+                    e.dbpedia_url,
+                    e.updated_at
+                FROM {source_ident} AS e
+                LEFT JOIN {ner_ident} AS n ON n.qid = e.qid
+                LEFT JOIN alpaca_pipeline_state AS state
+                    ON state.stage = '{stage}';
+
+                COMMENT ON VIEW entities_with_ner IS
+                    'Entities joined to the complete wikidata-ner-classifier '
+                    'coarse -> fine -> subtype -> specific hierarchy.';
+                """
+            )
     conn.commit()
 
 
@@ -295,12 +394,17 @@ def _write_batch(
                 subtype TEXT,
                 specific_type TEXT,
                 specific_types TEXT[],
+                secondary_types TEXT[],
                 facets JSONB,
+                specificity_level SMALLINT,
+                retrieval_path TEXT[],
                 retrieval_key TEXT,
                 retrieval_tags TEXT[],
                 confidence REAL,
                 specific_type_confidence REAL,
-                classifier_version TEXT
+                classifier_name TEXT,
+                classifier_version TEXT,
+                taxonomy_version TEXT
             ) ON COMMIT PRESERVE ROWS
             """
         )
@@ -310,26 +414,32 @@ def _write_batch(
                 """
                 COPY alpaca_ner_batch (
                     qid, coarse_type, fine_type, subtype, specific_type,
-                    specific_types, facets, retrieval_key, retrieval_tags,
-                    confidence, specific_type_confidence, classifier_version
+                    specific_types, secondary_types, facets, specificity_level,
+                    retrieval_path, retrieval_key, retrieval_tags, confidence,
+                    specific_type_confidence, classifier_name,
+                    classifier_version, taxonomy_version
                 ) FROM STDIN
                 """
             ) as copy:
                 for row in classified_rows:
                     mutable = list(row)
-                    mutable[6] = Jsonb(mutable[6])
+                    mutable[7] = Jsonb(mutable[7])
                     copy.write_row(tuple(mutable))
             cur.execute(
                 f"""
                 INSERT INTO {ner_ident} (
                     qid, coarse_type, fine_type, subtype, specific_type,
-                    specific_types, facets, retrieval_key, retrieval_tags,
-                    confidence, specific_type_confidence, classifier_version
+                    specific_types, secondary_types, facets, specificity_level,
+                    retrieval_path, retrieval_key, retrieval_tags, confidence,
+                    specific_type_confidence, classifier_name,
+                    classifier_version, taxonomy_version
                 )
                 SELECT
                     qid, coarse_type, fine_type, subtype, specific_type,
-                    specific_types, facets, retrieval_key, retrieval_tags,
-                    confidence, specific_type_confidence, classifier_version
+                    specific_types, secondary_types, facets, specificity_level,
+                    retrieval_path, retrieval_key, retrieval_tags, confidence,
+                    specific_type_confidence, classifier_name,
+                    classifier_version, taxonomy_version
                 FROM alpaca_ner_batch
                 ON CONFLICT (qid) DO UPDATE SET
                     coarse_type = EXCLUDED.coarse_type,
@@ -337,12 +447,17 @@ def _write_batch(
                     subtype = EXCLUDED.subtype,
                     specific_type = EXCLUDED.specific_type,
                     specific_types = EXCLUDED.specific_types,
+                    secondary_types = EXCLUDED.secondary_types,
                     facets = EXCLUDED.facets,
+                    specificity_level = EXCLUDED.specificity_level,
+                    retrieval_path = EXCLUDED.retrieval_path,
                     retrieval_key = EXCLUDED.retrieval_key,
                     retrieval_tags = EXCLUDED.retrieval_tags,
                     confidence = EXCLUDED.confidence,
                     specific_type_confidence = EXCLUDED.specific_type_confidence,
+                    classifier_name = EXCLUDED.classifier_name,
                     classifier_version = EXCLUDED.classifier_version,
+                    taxonomy_version = EXCLUDED.taxonomy_version,
                     updated_at = NOW()
                 """
             )
@@ -364,9 +479,36 @@ def _write_batch(
                     {
                         "classifier": CLASSIFIER_DISTRIBUTION,
                         "classifier_version": REQUIRED_CLASSIFIER_VERSION,
+                        "taxonomy_version": _taxonomy_version(),
+                        "complete": False,
                     }
                 ),
             ),
+        )
+    conn.commit()
+
+
+def _mark_stage_complete(
+    conn: Any,
+    *,
+    stage: str,
+    last_qid: str,
+    processed: int,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO alpaca_pipeline_state (
+                stage, last_qid, processed, metadata
+            )
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (stage) DO UPDATE SET
+                last_qid = EXCLUDED.last_qid,
+                processed = EXCLUDED.processed,
+                metadata = alpaca_pipeline_state.metadata || EXCLUDED.metadata,
+                updated_at = NOW()
+            """,
+            (stage, last_qid, int(processed), Jsonb({"complete": True})),
         )
     conn.commit()
 
@@ -409,6 +551,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Clear generated NER results and the resume checkpoint before starting.",
     )
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="Create/migrate the NER table and joined inspection view, then exit.",
+    )
     return parser.parse_args()
 
 
@@ -421,7 +568,15 @@ def run(args: argparse.Namespace) -> int:
     stage = f"ner:{source_table}:{REQUIRED_CLASSIFIER_VERSION}"
 
     with pg.connect(resolve_postgres_dsn(args.postgres_dsn)) as conn:
-        _ensure_schema(conn, ner_table=ner_table)
+        _ensure_schema(conn, source_table=source_table, ner_table=ner_table)
+        if args.prepare_only:
+            print(
+                "NER schema ready:",
+                f"table={ner_table}",
+                f"classifier={CLASSIFIER_DISTRIBUTION}=={REQUIRED_CLASSIFIER_VERSION}",
+                f"taxonomy={_taxonomy_version()}",
+            )
+            return 0
         if args.reset:
             _reset_state(conn, stage=stage, ner_table=ner_table)
         last_qid, processed = _load_state(conn, stage=stage)
@@ -434,6 +589,7 @@ def run(args: argparse.Namespace) -> int:
         invocation_limit = int(args.limit)
         classified_total = 0
         abstained_total = 0
+        exhausted = False
 
         print(
             "Classifying Postgres entities:",
@@ -470,6 +626,7 @@ def run(args: argparse.Namespace) -> int:
                         include_non_items=bool(args.include_non_items),
                     )
                     if not rows:
+                        exhausted = True
                         break
                     predictions = list(
                         executor.map(
@@ -500,6 +657,13 @@ def run(args: argparse.Namespace) -> int:
                         abstained=abstained_total,
                         last_qid=last_qid,
                     )
+        if exhausted:
+            _mark_stage_complete(
+                conn,
+                stage=stage,
+                last_qid=last_qid,
+                processed=processed,
+            )
 
     print(
         "Completed Wikidata NER classification:",

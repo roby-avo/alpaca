@@ -40,8 +40,19 @@ The build is restart-aware:
 
 To fit a full build on a single disk, this mode stores English/`mul` names plus
 a fallback primary label, skips the graph-context triple table, and stores
-classifier output in a separate `entity_ner` table. All long phases use `tqdm`;
-the 110M total is explicitly an estimate.
+classifier output in a separate `entity_ner` table. The normalized table mirrors
+the classifier's `coarse → fine → subtype → specific type` hierarchy, secondary
+types, facets, specificity level, retrieval path/tags, confidence, package
+version, and bundled taxonomy version. Keeping this separate avoids rewriting
+the roughly 110M-row `entities` heap and the associated PostgreSQL WAL/MVCC
+bloat.
+
+For inspection in Adminer, use the `entities_with_ner` view rather than the
+legacy type columns on `entities`. Its `ner_status` is `PENDING` during dump
+ingestion/classification, `CLASSIFIED` when `entity_ner` has a result, and
+`ABSTAINED` after the completed classifier pass when version 0.5.0 deliberately
+does not assign a type. All long phases use `tqdm`; the 110M total is explicitly
+an estimate.
 
 ## Local Stack
 

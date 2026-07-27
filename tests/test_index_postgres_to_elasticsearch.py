@@ -90,12 +90,17 @@ class IndexPostgresToElasticsearchTests(unittest.TestCase):
             None,
             "SWORD_AND_SANDAL_FILM",
             ["SWORD_AND_SANDAL_FILM"],
+            [],
             {"genre": ["SWORD_AND_SANDAL"]},
+            4,
+            ["CREATIVE_WORK", "FILM", "SWORD_AND_SANDAL_FILM"],
             "CREATIVE_WORK/FILM/SWORD_AND_SANDAL_FILM",
             ["CREATIVE_WORK", "FILM", "GENRE:SWORD_AND_SANDAL"],
             0.77,
             0.78,
+            "wikidata-ner-classifier",
             "0.5.0",
+            "1.0.0/0.3.1",
         )
 
         doc = _row_to_document(row)
@@ -105,7 +110,14 @@ class IndexPostgresToElasticsearchTests(unittest.TestCase):
         self.assertEqual(doc["fine_type"], "FILM")
         self.assertEqual(doc["ner_specific_type"], "SWORD_AND_SANDAL_FILM")
         self.assertEqual(doc["ner_facets"], {"genre": ["SWORD_AND_SANDAL"]})
+        self.assertEqual(doc["ner_specificity_level"], 4)
+        self.assertEqual(
+            doc["ner_retrieval_path"],
+            ["CREATIVE_WORK", "FILM", "SWORD_AND_SANDAL_FILM"],
+        )
+        self.assertEqual(doc["ner_classifier_name"], "wikidata-ner-classifier")
         self.assertEqual(doc["ner_classifier_version"], "0.5.0")
+        self.assertEqual(doc["ner_taxonomy_version"], "1.0.0/0.3.1")
 
     def test_build_index_payload_indexes_requested_identifier_fields(self) -> None:
         properties = _build_index_payload()["mappings"]["properties"]

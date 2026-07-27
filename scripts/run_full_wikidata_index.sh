@@ -83,6 +83,14 @@ echo "Building the pinned Alpaca runtime and starting Postgres..."
 docker_compose build api
 docker_compose up -d --wait postgres
 
+echo "Preparing the wikidata-ner-classifier hierarchy schema..."
+docker_compose run --rm -T --no-deps \
+  -e ALPACA_POSTGRES_DSN="${POSTGRES_DSN}" \
+  api \
+  python -m src.classify_postgres_entities \
+    --postgres-dsn "${POSTGRES_DSN}" \
+    --prepare-only
+
 if [ ! -f "${INGEST_MARKER}" ]; then
   echo "Phase 1/3: stream the compressed dump into lean Postgres storage"
   docker_compose run --rm -T --no-deps \
