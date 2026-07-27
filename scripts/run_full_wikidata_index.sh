@@ -45,7 +45,7 @@ fi
 
 docker_compose() {
   if [ -n "${DOCKER_PREFIX}" ]; then
-    sudo docker compose "$@"
+    sudo -E docker compose "$@"
   else
     docker compose "$@"
   fi
