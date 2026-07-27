@@ -30,6 +30,7 @@ class EntityRecord:
     aliases: Mapping[str, Sequence[str]]
     description: str | None
     types: Sequence[str]
+    ancestor_types: Sequence[str]
     item_category: str
     coarse_type: str
     fine_type: str
@@ -739,6 +740,7 @@ class PostgresStore:
             aliases TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
             description TEXT,
             types TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+            ancestor_types TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
             coarse_type TEXT NOT NULL DEFAULT '',
             fine_type TEXT NOT NULL DEFAULT '',
             item_category TEXT NOT NULL DEFAULT '',
@@ -775,6 +777,7 @@ class PostgresStore:
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS labels TEXT[] NOT NULL DEFAULT ARRAY[]::text[];
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS aliases TEXT[] NOT NULL DEFAULT ARRAY[]::text[];
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS types TEXT[] NOT NULL DEFAULT ARRAY[]::text[];
+        ALTER TABLE entities ADD COLUMN IF NOT EXISTS ancestor_types TEXT[] NOT NULL DEFAULT ARRAY[]::text[];
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS coarse_type TEXT NOT NULL DEFAULT '';
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS fine_type TEXT NOT NULL DEFAULT '';
         ALTER TABLE entities ADD COLUMN IF NOT EXISTS item_category TEXT NOT NULL DEFAULT '';
@@ -873,10 +876,10 @@ class PostgresStore:
             return 0
         sql = """
         INSERT INTO entities (
-            qid, label, labels, aliases, description, types, coarse_type, fine_type,
+            qid, label, labels, aliases, description, types, ancestor_types, coarse_type, fine_type,
             item_category, popularity, prior, wikipedia_url, dbpedia_url
         ) VALUES (
-            %s, %s, %s::text[], %s::text[], %s, %s::text[], %s, %s,
+            %s, %s, %s::text[], %s::text[], %s, %s::text[], %s::text[], %s, %s,
             %s, %s, %s, %s, %s
         )
         ON CONFLICT (qid) DO UPDATE SET
@@ -885,6 +888,7 @@ class PostgresStore:
             aliases = EXCLUDED.aliases,
             description = EXCLUDED.description,
             types = EXCLUDED.types,
+            ancestor_types = EXCLUDED.ancestor_types,
             coarse_type = EXCLUDED.coarse_type,
             fine_type = EXCLUDED.fine_type,
             item_category = EXCLUDED.item_category,
@@ -911,6 +915,7 @@ class PostgresStore:
                     list(search_cols["aliases"]),
                     row.description,
                     list(row.types),
+                    list(row.ancestor_types),
                     row.coarse_type,
                     row.fine_type,
                     row.item_category,

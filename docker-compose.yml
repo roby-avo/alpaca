@@ -6,6 +6,11 @@ services:
     command: >
       postgres
       -c max_connections=${ALPACA_POSTGRES_MAX_CONNECTIONS:-200}
+      -c shared_buffers=${ALPACA_POSTGRES_SHARED_BUFFERS:-1GB}
+      -c maintenance_work_mem=${ALPACA_POSTGRES_MAINTENANCE_WORK_MEM:-512MB}
+      -c max_wal_size=${ALPACA_POSTGRES_MAX_WAL_SIZE:-4GB}
+      -c checkpoint_completion_target=${ALPACA_POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
+      -c wal_compression=${ALPACA_POSTGRES_WAL_COMPRESSION:-on}
     environment:
       POSTGRES_DB: ${ALPACA_POSTGRES_DB:-alpaca}
       POSTGRES_USER: ${ALPACA_POSTGRES_USER:-postgres}

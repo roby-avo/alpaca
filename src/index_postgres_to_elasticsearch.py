@@ -13,7 +13,6 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .common import resolve_configured_str, resolve_postgres_dsn, running_in_container, tqdm
-from .ner_typing import infer_ner_types
 from .postgres_store import PostgresStore
 try:  # pragma: no cover - import depends on runtime environment
     import psycopg  # type: ignore
@@ -26,6 +25,7 @@ DEFAULT_ELASTICSEARCH_URL_LOCAL = "http://localhost:9200"
 DEFAULT_ELASTICSEARCH_URL_DOCKER = "http://elasticsearch:9200"
 DEFAULT_INDEX_NAME = "alpaca-entities"
 DEFAULT_TABLE_NAME = "entities"
+DEFAULT_NER_TABLE_NAME = "entity_ner"
 DEFAULT_FETCH_SIZE = 10_000
 DEFAULT_BULK_ACTIONS = 2_000
 DEFAULT_WORKERS = 4
@@ -143,6 +143,14 @@ def parse_args() -> argparse.Namespace:
         "--table",
         default=DEFAULT_TABLE_NAME,
         help=f"Postgres source table (default: {DEFAULT_TABLE_NAME}).",
+    )
+    parser.add_argument(
+        "--ner-table",
+        default=DEFAULT_NER_TABLE_NAME,
+        help=(
+            "Optional Postgres table produced by src.classify_postgres_entities "
+            f"(default: {DEFAULT_NER_TABLE_NAME}). Missing tables are ignored."
+        ),
     )
     parser.add_argument(
         "--batch-size",
@@ -439,6 +447,27 @@ def _build_index_payload() -> dict[str, Any]:
                     "type": "keyword",
                     "normalizer": "alpaca_keyword_lower",
                 },
+                "ner_subtype": {
+                    "type": "keyword",
+                    "normalizer": "alpaca_keyword_lower",
+                },
+                "ner_specific_type": {
+                    "type": "keyword",
+                    "normalizer": "alpaca_keyword_lower",
+                },
+                "ner_specific_types": {
+                    "type": "keyword",
+                    "normalizer": "alpaca_keyword_lower",
+                },
+                "ner_facets": {"type": "flattened"},
+                "ner_retrieval_key": {"type": "keyword"},
+                "ner_retrieval_tags": {
+                    "type": "keyword",
+                    "normalizer": "alpaca_keyword_lower",
+                },
+                "ner_confidence": {"type": "half_float"},
+                "ner_specific_type_confidence": {"type": "half_float"},
+                "ner_classifier_version": {"type": "keyword"},
                 "item_category": {
                     "type": "keyword",
                     "normalizer": "alpaca_keyword_lower",
@@ -615,49 +644,6 @@ def _as_iso_datetime(raw: Any) -> str:
     return ""
 
 
-def _synthetic_claims_from_type_qids(type_qids: Sequence[str]) -> dict[str, Any] | None:
-    clean_qids = _clean_terms(list(type_qids))
-    if not clean_qids:
-        return None
-    return {
-        "P31": [
-            {
-                "mainsnak": {
-                    "snaktype": "value",
-                    "datavalue": {"value": {"id": qid}},
-                }
-            }
-            for qid in clean_qids
-        ]
-    }
-
-
-def _recompute_ner_type_fields(
-    *,
-    qid: str,
-    label: str,
-    labels: Sequence[str],
-    aliases: Sequence[str],
-    description: str,
-    type_qids: Sequence[str],
-) -> tuple[str, str]:
-    labels_for_typing = {"en": label}
-    for index, value in enumerate(labels):
-        labels_for_typing[f"x-label-{index}"] = value
-    aliases_for_typing = {"en": list(aliases)}
-    descriptions_for_typing = {"en": description} if description else {}
-    coarse_types, fine_types, _source = infer_ner_types(
-        entity_id=qid,
-        labels=labels_for_typing,
-        aliases=aliases_for_typing,
-        descriptions=descriptions_for_typing,
-        claims=_synthetic_claims_from_type_qids(type_qids),
-    )
-    coarse_type = coarse_types[0] if coarse_types else ""
-    fine_type = fine_types[0] if fine_types else ""
-    return coarse_type, fine_type
-
-
 def _row_to_document(
     row: Sequence[Any],
     *,
@@ -683,19 +669,16 @@ def _row_to_document(
         max_terms=max_indexed_aliases,
         excluded={clean_label, *labels},
     )
-    has_context_column = len(row) >= 15
+    has_ner_columns = len(row) >= 25
+    has_context_column = len(row) == 15
     shift = 1 if has_context_column else 0
     context_string = row[6] if has_context_column and isinstance(row[6], str) else ""
     description = row[4] if isinstance(row[4], str) else ""
     type_qids = _clean_terms(row[5])
-    coarse_type, fine_type = _recompute_ner_type_fields(
-        qid=qid,
-        label=clean_label,
-        labels=labels,
-        aliases=aliases,
-        description=description,
-        type_qids=type_qids,
-    )
+    stored_coarse_type = row[6 + shift] if isinstance(row[6 + shift], str) else ""
+    stored_fine_type = row[7 + shift] if isinstance(row[7 + shift], str) else ""
+    ner_coarse_type = row[14] if has_ner_columns and isinstance(row[14], str) else ""
+    ner_fine_type = row[15] if has_ner_columns and isinstance(row[15], str) else ""
 
     doc: dict[str, Any] = {
         "qid": qid,
@@ -704,8 +687,8 @@ def _row_to_document(
         "aliases": aliases,
         "types": type_qids,
         "context_string": context_string,
-        "coarse_type": coarse_type,
-        "fine_type": fine_type,
+        "coarse_type": ner_coarse_type or stored_coarse_type,
+        "fine_type": ner_fine_type or stored_fine_type,
         "item_category": row[8 + shift] if isinstance(row[8 + shift], str) else "",
         "popularity": _as_float(row[9 + shift]),
         "prior": _as_float(row[10 + shift]),
@@ -715,6 +698,28 @@ def _row_to_document(
     }
     if description:
         doc["description"] = description
+    if has_ner_columns and ner_coarse_type and ner_fine_type:
+        optional_string_fields = {
+            "ner_subtype": row[16],
+            "ner_specific_type": row[17],
+            "ner_retrieval_key": row[20],
+            "ner_classifier_version": row[24],
+        }
+        for field_name, value in optional_string_fields.items():
+            if isinstance(value, str) and value:
+                doc[field_name] = value
+        specific_types = _clean_terms(row[18])
+        if specific_types:
+            doc["ner_specific_types"] = specific_types
+        if isinstance(row[19], Mapping) and row[19]:
+            doc["ner_facets"] = dict(row[19])
+        retrieval_tags = _clean_terms(row[21])
+        if retrieval_tags:
+            doc["ner_retrieval_tags"] = retrieval_tags
+        if isinstance(row[22], (int, float)):
+            doc["ner_confidence"] = float(row[22])
+        if isinstance(row[23], (int, float)):
+            doc["ner_specific_type_confidence"] = float(row[23])
     updated_at = _as_iso_datetime(row[13 + shift])
     if updated_at:
         doc["updated_at"] = updated_at
@@ -725,6 +730,7 @@ def _iter_documents_from_postgres(
     *,
     postgres_dsn: str,
     table_name: str,
+    ner_table_name: str,
     batch_size: int,
     updated_since: str | None,
     max_indexed_labels: int,
@@ -733,6 +739,7 @@ def _iter_documents_from_postgres(
 ) -> Iterator[list[dict[str, Any]]]:
     pg = _require_psycopg()
     table_sql = _quote_table_name(table_name)
+    ner_table_sql = _quote_table_name(ner_table_name)
     context_store = PostgresStore(postgres_dsn)
     table_name_tail = table_name.strip().split(".")[-1]
     source_alias = "src"
@@ -741,6 +748,43 @@ def _iter_documents_from_postgres(
     if updated_since:
         where_sql = f"WHERE {source_alias}.updated_at >= %s::timestamptz"
         params.append(updated_since)
+
+    with pg.connect(postgres_dsn) as metadata_conn:
+        with metadata_conn.cursor() as metadata_cur:
+            metadata_cur.execute("SELECT to_regclass(%s)", (ner_table_name,))
+            metadata_row = metadata_cur.fetchone()
+            has_ner_table = bool(metadata_row and metadata_row[0])
+
+    ner_select_sql = """
+        ner.coarse_type,
+        ner.fine_type,
+        ner.subtype,
+        ner.specific_type,
+        ner.specific_types,
+        ner.facets,
+        ner.retrieval_key,
+        ner.retrieval_tags,
+        ner.confidence,
+        ner.specific_type_confidence,
+        ner.classifier_version
+    """ if has_ner_table and table_name_tail == "entities" else """
+        NULL::text,
+        NULL::text,
+        NULL::text,
+        NULL::text,
+        NULL::text[],
+        NULL::jsonb,
+        NULL::text,
+        NULL::text[],
+        NULL::real,
+        NULL::real,
+        NULL::text
+    """
+    ner_join_sql = (
+        f"LEFT JOIN {ner_table_sql} AS ner ON ner.qid = {source_alias}.qid"
+        if has_ner_table and table_name_tail == "entities"
+        else ""
+    )
 
     sql = f"""
     SELECT
@@ -757,8 +801,10 @@ def _iter_documents_from_postgres(
         {source_alias}.prior,
         {source_alias}.wikipedia_url,
         {source_alias}.dbpedia_url,
-        {source_alias}.updated_at
+        {source_alias}.updated_at,
+        {ner_select_sql}
     FROM {table_sql} AS {source_alias}
+    {ner_join_sql}
     {where_sql}
     ORDER BY {source_alias}.qid
     """
@@ -781,7 +827,7 @@ def _iter_documents_from_postgres(
                     if doc:
                         docs.append(doc)
                 if docs:
-                    if table_name_tail == "entities":
+                    if table_name_tail == "entities" and max_context_chars > 0:
                         yield context_store.attach_context_strings(
                             docs,
                             chunk_size=min(2000, max(1, batch_size)),
@@ -971,6 +1017,9 @@ def _run(args: argparse.Namespace) -> int:
     table_name = args.table.strip()
     if not table_name:
         raise ValueError("Table name must be non-empty.")
+    ner_table_name = args.ner_table.strip()
+    if not ner_table_name:
+        raise ValueError("NER table name must be non-empty.")
 
     _es_request_json(
         base_url=elasticsearch_url,
@@ -1034,6 +1083,7 @@ def _run(args: argparse.Namespace) -> int:
             for batch_docs in _iter_documents_from_postgres(
                 postgres_dsn=postgres_dsn,
                 table_name=table_name,
+                ner_table_name=ner_table_name,
                 batch_size=int(args.batch_size),
                 updated_since=args.updated_since,
                 max_indexed_labels=int(args.max_indexed_labels),

@@ -224,6 +224,7 @@ class EntityParseContext:
     label: str
     description: str | None
     types: Sequence[str]
+    ancestor_types: Sequence[str]
     item_category: str
     coarse_type: str
     fine_type: str
@@ -637,6 +638,10 @@ def _extract_entity_type_qids(entity: Mapping[str, Any]) -> list[str]:
     return type_qids
 
 
+def _extract_entity_ancestor_type_qids(entity: Mapping[str, Any]) -> list[str]:
+    return _claim_object_ids_for_property(entity, "P279", limit=32)
+
+
 def infer_item_category(entity: Mapping[str, Any]) -> str:
     entity_id = entity.get("id")
     if not isinstance(entity_id, str) or not entity_id:
@@ -684,6 +689,8 @@ def _build_entity_parse_context(
     language_allowlist: Sequence[str],
     max_aliases_per_language: int,
     disable_ner_classifier: bool,
+    storage_language_allowlist: Sequence[str] | None = None,
+    include_unlabeled: bool = False,
 ) -> EntityParseContext | None:
     entity_id = entity.get("id")
     if not isinstance(entity_id, str) or not is_supported_entity_id(entity_id):
@@ -696,7 +703,9 @@ def _build_entity_parse_context(
 
     label = _pick_primary_label(all_labels)
     if not label:
-        return None
+        if not include_unlabeled:
+            return None
+        label = entity_id
 
     labels_for_typing = select_text_map_languages(
         all_labels,
@@ -719,6 +728,21 @@ def _build_entity_parse_context(
     description = normalize_text(raw_description) if isinstance(raw_description, str) else ""
     description = description or None
 
+    stored_labels = all_labels
+    stored_aliases = all_aliases
+    if storage_language_allowlist is not None:
+        stored_labels = select_text_map_languages(
+            all_labels,
+            storage_language_allowlist,
+            fallback_to_any=True,
+        )
+        stored_aliases = select_alias_map_languages(
+            all_aliases,
+            storage_language_allowlist,
+            max_aliases_per_language=max_aliases_per_language,
+            fallback_to_any=False,
+        )
+
     if disable_ner_classifier:
         coarse_type = ""
         fine_type = ""
@@ -735,12 +759,13 @@ def _build_entity_parse_context(
 
     return EntityParseContext(
         entity_id=entity_id,
-        labels=all_labels,
-        aliases=all_aliases,
+        labels=stored_labels,
+        aliases=stored_aliases,
         descriptions=all_descriptions,
         label=label,
         description=description,
         types=_extract_entity_type_qids(entity),
+        ancestor_types=_extract_entity_ancestor_type_qids(entity),
         item_category=infer_item_category(entity),
         coarse_type=coarse_type,
         fine_type=fine_type,
@@ -760,6 +785,7 @@ def _entity_record_from_parse_context(parse_context: EntityParseContext) -> Enti
         aliases=parse_context.aliases,
         description=parse_context.description,
         types=parse_context.types,
+        ancestor_types=parse_context.ancestor_types,
         item_category=parse_context.item_category,
         coarse_type=parse_context.coarse_type,
         fine_type=parse_context.fine_type,
@@ -774,12 +800,16 @@ def transform_entity_to_record(
     language_allowlist: Sequence[str],
     max_aliases_per_language: int,
     disable_ner_classifier: bool,
+    storage_language_allowlist: Sequence[str] | None = None,
+    include_unlabeled: bool = False,
 ) -> EntityRecord | None:
     parse_context = _build_entity_parse_context(
         entity,
         language_allowlist=language_allowlist,
         max_aliases_per_language=max_aliases_per_language,
         disable_ner_classifier=disable_ner_classifier,
+        storage_language_allowlist=storage_language_allowlist,
+        include_unlabeled=include_unlabeled,
     )
     if parse_context is None:
         return None
@@ -796,6 +826,9 @@ def _flush_transform_batch(
     disable_ner_classifier: bool,
     max_entity_triples: int,
     max_entity_triples_per_predicate: int,
+    storage_language_allowlist: Sequence[str] | None,
+    disable_entity_triples: bool,
+    include_unlabeled: bool,
 ) -> tuple[int, int, int]:
     if not raw_entities:
         return 0, 0, 0
@@ -810,11 +843,15 @@ def _flush_transform_batch(
             language_allowlist=language_allowlist,
             max_aliases_per_language=max_aliases_per_language,
             disable_ner_classifier=disable_ner_classifier,
+            storage_language_allowlist=storage_language_allowlist,
+            include_unlabeled=include_unlabeled,
         )
         record = _entity_record_from_parse_context(parse_context) if parse_context is not None else None
         return (
             record,
-            extract_entity_triples(
+            []
+            if disable_entity_triples
+            else extract_entity_triples(
                 entity,
                 max_triples=max_entity_triples,
                 max_triples_per_predicate=max_entity_triples_per_predicate,
@@ -841,12 +878,14 @@ def _flush_transform_batch(
             records.append(record)
 
     stored = store.upsert_entities(records)
-    subject_qids = [
-        entity.get("id")
-        for entity in raw_entities
-        if isinstance(entity.get("id"), str) and is_supported_entity_id(entity.get("id"))
-    ]
-    stored_triples = store.replace_entity_triples(subject_qids=subject_qids, rows=triples)
+    stored_triples = 0
+    if not disable_entity_triples:
+        subject_qids = [
+            entity.get("id")
+            for entity in raw_entities
+            if isinstance(entity.get("id"), str) and is_supported_entity_id(entity.get("id"))
+        ]
+        stored_triples = store.replace_entity_triples(subject_qids=subject_qids, rows=triples)
     return stored, typed_rows, stored_triples
 
 
@@ -894,6 +933,9 @@ def run_pass1(
     disable_ner_classifier: bool = False,
     max_entity_triples: int = DEFAULT_MAX_ENTITY_TRIPLES,
     max_entity_triples_per_predicate: int = DEFAULT_MAX_ENTITY_TRIPLES_PER_PREDICATE,
+    storage_language_allowlist: Sequence[str] | None = None,
+    disable_entity_triples: bool = False,
+    include_unlabeled: bool = False,
     sample_cache_ids: str | None = None,
     sample_cache_ids_file: str | None = None,
     sample_cache_count: int | None = None,
@@ -1000,6 +1042,9 @@ def run_pass1(
                         disable_ner_classifier=disable_ner_classifier,
                         max_entity_triples=max_entity_triples,
                         max_entity_triples_per_predicate=max_entity_triples_per_predicate,
+                        storage_language_allowlist=storage_language_allowlist,
+                        disable_entity_triples=disable_entity_triples,
+                        include_unlabeled=include_unlabeled,
                     )
                     stored_rows += stored
                     typed_rows += typed
@@ -1016,6 +1061,9 @@ def run_pass1(
                 disable_ner_classifier=disable_ner_classifier,
                 max_entity_triples=max_entity_triples,
                 max_entity_triples_per_predicate=max_entity_triples_per_predicate,
+                storage_language_allowlist=storage_language_allowlist,
+                disable_entity_triples=disable_entity_triples,
+                include_unlabeled=include_unlabeled,
             )
             stored_rows += stored
             typed_rows += typed
@@ -1036,6 +1084,9 @@ def run_pass1(
         f"languages={','.join(active_languages)}",
         f"max_entity_triples={max_entity_triples}",
         f"max_entity_triples_per_predicate={max_entity_triples_per_predicate}",
+        f"entity_triples={'disabled' if disable_entity_triples else 'enabled'}",
+        f"storage_languages={','.join(storage_language_allowlist) if storage_language_allowlist else 'all'}",
+        f"include_unlabeled={include_unlabeled}",
         f"source={'sample_cache' if use_sample_cache else 'dump'}",
         f"workers={workers}",
     )
@@ -1091,6 +1142,14 @@ def parse_args() -> argparse.Namespace:
         help="Max aliases per language considered for lexical typing (stored aliases remain multilingual).",
     )
     parser.add_argument(
+        "--storage-languages",
+        help=(
+            "Optional comma-separated language allowlist persisted in Postgres. "
+            "The primary label still falls back to any available language. "
+            "Omit to retain the legacy multilingual storage behavior."
+        ),
+    )
+    parser.add_argument(
         "--max-entity-triples",
         type=parse_non_negative_int,
         default=DEFAULT_MAX_ENTITY_TRIPLES,
@@ -1107,6 +1166,19 @@ def parse_args() -> argparse.Namespace:
             "Per-predicate cap applied before the overall entity_triples cap "
             f"(default: {DEFAULT_MAX_ENTITY_TRIPLES_PER_PREDICATE}, 0 keeps all edges per predicate)."
         ),
+    )
+    parser.add_argument(
+        "--disable-entity-triples",
+        action="store_true",
+        help=(
+            "Do not materialize the graph context table. Recommended for full-dump "
+            "NER + Elasticsearch builds where disk capacity is constrained."
+        ),
+    )
+    parser.add_argument(
+        "--include-unlabeled",
+        action="store_true",
+        help="Persist unlabeled entities using their QID/PID as the fallback label.",
     )
     parser.add_argument(
         "--sample-cache-ids",
@@ -1139,6 +1211,11 @@ def main() -> int:
         elif args.dump_path:
             raise ValueError("Use either --dump-path or --sample-cache-* selectors, not both.")
         language_allowlist = parse_language_allowlist(args.languages, arg_name="--languages")
+        storage_language_allowlist = (
+            parse_language_allowlist(args.storage_languages, arg_name="--storage-languages")
+            if args.storage_languages
+            else None
+        )
         expected_entity_total = resolve_expected_entity_total(
             manual_total=(args.expected_entity_total or None),
             fetch_live=args.fetch_live_entity_total,
@@ -1155,6 +1232,9 @@ def main() -> int:
             disable_ner_classifier=args.disable_ner_classifier,
             max_entity_triples=args.max_entity_triples,
             max_entity_triples_per_predicate=args.max_entity_triples_per_predicate,
+            storage_language_allowlist=storage_language_allowlist,
+            disable_entity_triples=args.disable_entity_triples,
+            include_unlabeled=args.include_unlabeled,
             sample_cache_ids=args.sample_cache_ids,
             sample_cache_ids_file=args.sample_cache_ids_file,
             sample_cache_count=args.sample_cache_count,

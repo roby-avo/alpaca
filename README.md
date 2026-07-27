@@ -9,6 +9,40 @@ Deterministic entity lookup over Wikidata-style data using:
 - Adminer (optional UI for inspecting PostgreSQL data)
 - Elasticvue (UI for inspecting Elasticsearch data)
 
+## Full Wikidata dump: Postgres → NER → Elasticsearch
+
+The production pipeline streams a `.json.bz2` Wikidata dump into Postgres, resolves
+P31/P106 and P279 IDs to their stored labels, classifies every Q-item with the pinned
+`wikidata-ner-classifier==0.5.0`, and bulk-indexes the joined entity + NER records
+into Elasticsearch.
+
+For a long-running VM build:
+
+```bash
+tmux new-session -d -s alpaca-wikidata \
+  "cd /path/to/alpaca && ./scripts/run_full_wikidata_index.sh \
+  2>&1 | tee -a data/output/full-wikidata.log"
+tmux attach -t alpaca-wikidata
+```
+
+The script defaults to `/home/roby-avo/latest-all.json.bz2`, an estimated
+110,000,000 entities, eight workers, and the `alpaca-wikidata` Elasticsearch
+index. Override these with `ALPACA_FULL_DUMP_PATH`,
+`ALPACA_EXPECTED_ENTITY_TOTAL`, `ALPACA_FULL_WORKERS`, and
+`ALPACA_FULL_ES_INDEX`.
+
+The build is restart-aware:
+
+- dump ingestion is marked complete only after the compressed stream finishes;
+- NER classification checkpoints the last QID in Postgres after every batch;
+- Elasticsearch uses QIDs as document IDs and is recreated only on the first
+  indexing attempt.
+
+To fit a full build on a single disk, this mode stores English/`mul` names plus
+a fallback primary label, skips the graph-context triple table, and stores
+classifier output in a separate `entity_ner` table. All long phases use `tqdm`;
+the 110M total is explicitly an estimate.
+
 ## Local Stack
 
 Local Docker infrastructure is intentionally lightweight for dev:
@@ -17,8 +51,7 @@ Local Docker infrastructure is intentionally lightweight for dev:
 - Elasticvue connects directly to Elasticsearch over CORS
 - Adminer connects to Postgres with empty password (same local dev assumption)
 - Postgres defaults to `max_connections=200` (as requested for compatibility)
-- Postgres keeps defaults for most internals; only `shm_size` and `max_connections`
-  are explicitly configured in `.env.example`
+- Postgres tuning remains environment-configurable, with conservative local defaults
 
 The FastAPI service requires Bearer-token authentication for every API operation.
 For production, configure a SHA-256 token digest instead of storing the raw

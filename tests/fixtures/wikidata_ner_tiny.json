@@ -1,0 +1,5 @@
+[
+{"id":"Q11424","type":"item","labels":{"en":{"language":"en","value":"film"}},"descriptions":{"en":{"language":"en","value":"sequence of images that give the impression of movement"}},"claims":{},"sitelinks":{}},
+{"id":"Q3441181","type":"item","labels":{"en":{"language":"en","value":"Rome Against Rome"}},"descriptions":{"en":{"language":"en","value":"1964 sword-and-sandal film directed by Giuseppe Vari"}},"claims":{"P31":[{"rank":"normal","mainsnak":{"snaktype":"value","datavalue":{"value":{"entity-type":"item","numeric-id":11424}}}}]},"sitelinks":{"enwiki":{"title":"Rome Against Rome"}}},
+{"id":"Q999999999","type":"item","labels":{"en":{"language":"en","value":"Untyped fixture item"}},"descriptions":{"en":{"language":"en","value":"fixture without a type anchor"}},"claims":{},"sitelinks":{}}
+]

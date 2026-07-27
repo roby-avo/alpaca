@@ -124,6 +124,54 @@ class BuildPostgresEntitiesCategoryTests(unittest.TestCase):
         assert record is not None
         self.assertIsNone(record.description)
 
+    def test_full_dump_can_keep_unlabeled_item_with_qid_fallback(self) -> None:
+        record = transform_entity_to_record(
+            {
+                "id": "Q999999998",
+                "type": "item",
+                "labels": {},
+                "claims": {},
+            },
+            language_allowlist=("en",),
+            max_aliases_per_language=4,
+            disable_ner_classifier=True,
+            include_unlabeled=True,
+        )
+
+        assert record is not None
+        self.assertEqual(record.label, "Q999999998")
+        self.assertEqual(record.labels, {})
+
+    def test_full_dump_storage_keeps_selected_languages_and_p279_ancestors(self) -> None:
+        entity = {
+            "id": "Q11424",
+            "type": "item",
+            "labels": {
+                "en": {"language": "en", "value": "film"},
+                "fr": {"language": "fr", "value": "film cinématographique"},
+            },
+            "aliases": {
+                "en": [{"language": "en", "value": "motion picture"}],
+                "fr": [{"language": "fr", "value": "œuvre filmique"}],
+            },
+            "claims": {
+                "P279": [_statement_for_item_qid(243_1196)],
+            },
+        }
+
+        record = transform_entity_to_record(
+            entity,
+            language_allowlist=("en",),
+            storage_language_allowlist=("en", "mul"),
+            max_aliases_per_language=4,
+            disable_ner_classifier=True,
+        )
+
+        assert record is not None
+        self.assertEqual(record.labels, {"en": "film"})
+        self.assertEqual(record.aliases, {"en": ["motion picture"]})
+        self.assertEqual(record.ancestor_types, ["Q2431196"])
+
     def test_extract_multilingual_payload_removes_aliases_duplicated_by_labels(self) -> None:
         payload = extract_multilingual_payload(
             {

@@ -45,7 +45,7 @@ class IndexPostgresToElasticsearchTests(unittest.TestCase):
         self.assertEqual(doc["dbpedia_url"], "it.dbpedia.org|Roma")
         self.assertEqual(doc["updated_at"], "2026-03-10T08:30:00+00:00")
 
-    def test_row_to_document_recomputes_ner_typing_from_postgres_text(self) -> None:
+    def test_row_to_document_keeps_stored_type_without_entity_ner_join(self) -> None:
         row = (
             "Q999",
             "Acme",
@@ -66,8 +66,46 @@ class IndexPostgresToElasticsearchTests(unittest.TestCase):
         doc = _row_to_document(row)
 
         assert doc is not None
-        self.assertEqual(doc["coarse_type"], "ORGANIZATION")
-        self.assertEqual(doc["fine_type"], "COMPANY")
+        self.assertEqual(doc["coarse_type"], "LOCATION")
+        self.assertEqual(doc["fine_type"], "CITY")
+
+    def test_row_to_document_prefers_wikidata_ner_classifier_fields(self) -> None:
+        row = (
+            "Q3441181",
+            "Rome Against Rome",
+            [],
+            [],
+            "1964 sword-and-sandal film",
+            ["Q11424"],
+            "",
+            "",
+            "ENTITY",
+            15.0,
+            0.5,
+            "",
+            "",
+            datetime(2026, 7, 27, tzinfo=timezone.utc),
+            "CREATIVE_WORK",
+            "FILM",
+            None,
+            "SWORD_AND_SANDAL_FILM",
+            ["SWORD_AND_SANDAL_FILM"],
+            {"genre": ["SWORD_AND_SANDAL"]},
+            "CREATIVE_WORK/FILM/SWORD_AND_SANDAL_FILM",
+            ["CREATIVE_WORK", "FILM", "GENRE:SWORD_AND_SANDAL"],
+            0.77,
+            0.78,
+            "0.5.0",
+        )
+
+        doc = _row_to_document(row)
+
+        assert doc is not None
+        self.assertEqual(doc["coarse_type"], "CREATIVE_WORK")
+        self.assertEqual(doc["fine_type"], "FILM")
+        self.assertEqual(doc["ner_specific_type"], "SWORD_AND_SANDAL_FILM")
+        self.assertEqual(doc["ner_facets"], {"genre": ["SWORD_AND_SANDAL"]})
+        self.assertEqual(doc["ner_classifier_version"], "0.5.0")
 
     def test_build_index_payload_indexes_requested_identifier_fields(self) -> None:
         properties = _build_index_payload()["mappings"]["properties"]
