@@ -34,6 +34,7 @@ DEFAULT_SOURCE_TABLE = "entities"
 DEFAULT_NER_TABLE = "entity_ner"
 DEFAULT_BATCH_SIZE = 20_000
 DEFAULT_BRANCH_CACHE_SIZE = 100_000
+DEFAULT_SIGNATURE_COST_WEIGHT = 64
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKER_CLASSIFIER: Any = None
 
@@ -199,10 +200,11 @@ def _partition_rows_by_type_signature(
     rows: list[tuple[Any, ...]],
     *,
     workers: int,
+    signature_cost_weight: int = DEFAULT_SIGNATURE_COST_WEIGHT,
 ) -> list[list[tuple[Any, ...]]]:
-    """Keep repeated type signatures in the same balanced worker partition."""
+    """Balance primary signature scans plus per-row refinement across workers."""
     partition_count = max(1, min(int(workers), len(rows)))
-    target_size = (len(rows) + partition_count - 1) // partition_count
+    primary_cost = max(0, int(signature_cost_weight))
     grouped: dict[
         tuple[tuple[str, ...], tuple[str, ...]],
         list[tuple[Any, ...]],
@@ -210,26 +212,34 @@ def _partition_rows_by_type_signature(
     for row in rows:
         grouped.setdefault(_row_type_signature(row), []).append(row)
 
+    total_estimated_cost = len(rows) + primary_cost * len(grouped)
+    target_cost = max(
+        1,
+        (total_estimated_cost + partition_count - 1) // partition_count,
+    )
+    max_piece_rows = max(1, target_cost - primary_cost)
+    pieces: list[list[tuple[Any, ...]]] = []
+    for signature_rows in grouped.values():
+        pieces.extend(
+            signature_rows[start : start + max_piece_rows]
+            for start in range(0, len(signature_rows), max_piece_rows)
+        )
+
     partitions: list[list[tuple[Any, ...]]] = [
         [] for _ in range(partition_count)
     ]
+    partition_costs = [0 for _ in range(partition_count)]
     for signature_rows in sorted(
-        grouped.values(),
-        key=len,
+        pieces,
+        key=lambda values: primary_cost + len(values),
         reverse=True,
     ):
-        offset = 0
-        while offset < len(signature_rows):
-            partition_index = min(
-                range(partition_count),
-                key=lambda index: len(partitions[index]),
-            )
-            available = target_size - len(partitions[partition_index])
-            take = min(len(signature_rows) - offset, max(1, available))
-            partitions[partition_index].extend(
-                signature_rows[offset : offset + take]
-            )
-            offset += take
+        partition_index = min(
+            range(partition_count),
+            key=lambda index: partition_costs[index],
+        )
+        partitions[partition_index].extend(signature_rows)
+        partition_costs[partition_index] += primary_cost + len(signature_rows)
     return [partition for partition in partitions if partition]
 
 
@@ -646,6 +656,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--signature-cost-weight",
+        type=_non_negative_int,
+        default=DEFAULT_SIGNATURE_COST_WEIGHT,
+        help=(
+            "Estimated cost of one uncached primary signature scan relative "
+            f"to one row refinement (default: {DEFAULT_SIGNATURE_COST_WEIGHT})."
+        ),
+    )
+    parser.add_argument(
         "--limit",
         type=_non_negative_int,
         default=0,
@@ -724,6 +743,7 @@ def run(args: argparse.Namespace) -> int:
             f"destination={ner_table}",
             f"workers={args.workers}",
             f"batch_size={args.batch_size}",
+            f"signature_cost_weight={args.signature_cost_weight}",
             f"resume_last_qid={last_qid or 'n/a'}",
             f"resume_processed={processed}",
             f"estimated_total={total}",
@@ -760,6 +780,7 @@ def run(args: argparse.Namespace) -> int:
                     partitions = _partition_rows_by_type_signature(
                         rows,
                         workers=int(args.workers),
+                        signature_cost_weight=int(args.signature_cost_weight),
                     )
                     partition_predictions = executor.map(
                         _classify_partition,

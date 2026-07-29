@@ -107,6 +107,45 @@ class ClassifyPostgresEntitiesTests(unittest.TestCase):
         ]
         self.assertTrue(all(len(signatures) == 1 for signatures in signatures_per_partition))
 
+    def test_partitioning_balances_unique_signature_scan_cost(self) -> None:
+        repeated = [
+            (
+                f"Q{index}",
+                f"Film {index}",
+                "documentary film",
+                ["Q11424"],
+                ["film"],
+                [],
+                [],
+            )
+            for index in range(4)
+        ]
+        unique = [
+            (
+                f"Q{index + 4}",
+                f"Unique {index}",
+                "item",
+                [f"Q{1000 + index}"],
+                [f"unique type {index}"],
+                [],
+                [],
+            )
+            for index in range(4)
+        ]
+
+        partitions = _partition_rows_by_type_signature(
+            repeated + unique,
+            workers=2,
+            signature_cost_weight=64,
+        )
+        estimated_costs = [
+            len(partition)
+            + 64 * len({tuple(row[4]) for row in partition})
+            for partition in partitions
+        ]
+
+        self.assertLessEqual(abs(estimated_costs[0] - estimated_costs[1]), 64)
+
 
 if __name__ == "__main__":
     unittest.main()
