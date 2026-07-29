@@ -7,7 +7,6 @@ import re
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import replace
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from importlib.resources import files
@@ -29,10 +28,12 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 CLASSIFIER_DISTRIBUTION = "wikidata-ner-classifier"
-REQUIRED_CLASSIFIER_VERSION = "0.5.0"
+REQUIRED_CLASSIFIER_VERSION = "0.5.1"
+LEGACY_RESUME_VERSIONS = ("0.5.0",)
 DEFAULT_SOURCE_TABLE = "entities"
 DEFAULT_NER_TABLE = "entity_ner"
 DEFAULT_BATCH_SIZE = 20_000
+DEFAULT_BRANCH_CACHE_SIZE = 100_000
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKER_CLASSIFIER: Any = None
 
@@ -108,95 +109,13 @@ def _taxonomy_version() -> str:
     )
 
 
-@lru_cache(maxsize=100_000)
-def _predict_without_description(
-    type_names: tuple[str, ...],
-    ancestor_names: tuple[str, ...],
-) -> Any:
-    return _classifier().predict(
-        qid="CACHE",
-        types=list(type_names),
-        ancestor_types=list(ancestor_names),
-    )
-
-
-def _predict_with_cached_branch(
-    *,
-    qid: str,
-    type_names: tuple[str, ...],
-    ancestor_names: tuple[str, ...],
-    description: str | None,
-) -> Any:
-    """Preserve classifier 0.5.0 output while caching its expensive branch scan.
-
-    In version 0.5.0 descriptions cannot influence coarse/fine branch selection;
-    they are only branch-local subtype/facet evidence. Reusing the type-only
-    prediction therefore avoids rescoring every taxonomy rule for repeated P31 /
-    P279 signatures. The refinement calls below are the same library methods
-    used by ``WikidataNERClassifier.predict`` after it selects a fine branch.
-    """
-    base = _predict_without_description(type_names, ancestor_names)
-    if base.abstained or not base.fine_type or not description:
-        return replace(base, qid=qid)
-
-    classifier = _classifier()
-    refinement_evidence = classifier._build_refinement_evidence(
-        type_names,
-        ancestor_names,
-        description,
-        None,
-    )
-    (
-        subtype,
-        subtype_is_generic,
-        subtype_hit,
-        subtype_clues,
-        facets,
-        facet_clues,
-        facet_hits,
-    ) = classifier._predict_subtype_and_facets(
-        base.fine_type,
-        refinement_evidence,
-    )
-    specific_type, specific_confidence, specific_types = (
-        classifier._compose_specific_types(
-            base.fine_type,
-            subtype,
-            subtype_is_generic,
-            subtype_hit,
-            facets,
-            facet_hits,
-            base.confidence,
-        )
-    )
-    refinement_sources = tuple(
-        dict.fromkeys(
-            clue.source
-            for clue in (*subtype_clues, *facet_clues)
-            if clue.source not in {"P31_label", "P279_label"}
-        )
-    )
-    return replace(
-        base,
-        qid=qid,
-        subtype=subtype,
-        specific_type=specific_type,
-        specific_types=specific_types,
-        facets=facets,
-        specific_type_confidence=specific_confidence,
-        subtype_clues=subtype_clues,
-        facet_clues=facet_clues,
-        refinement_sources=refinement_sources,
-    )
-
-
 def _clean_strings(raw: Any) -> list[str]:
     if not isinstance(raw, (list, tuple)):
         return []
     return [value.strip() for value in raw if isinstance(value, str) and value.strip()]
 
 
-def _classify_row(row: tuple[Any, ...]) -> tuple[Any, ...] | None:
+def _row_to_classifier_item(row: tuple[Any, ...]) -> dict[str, Any] | None:
     qid = row[0] if len(row) > 0 and isinstance(row[0], str) else ""
     if not qid:
         return None
@@ -217,19 +136,22 @@ def _classify_row(row: tuple[Any, ...]) -> tuple[Any, ...] | None:
         for index, type_qid in enumerate(ancestor_qids)
         if index < len(ancestor_labels)
     ]
-    type_names = tuple(value["name"] for value in direct_types)
-    ancestor_names = tuple(value["name"] for value in ancestor_types)
-    prediction = _predict_with_cached_branch(
-        qid=qid,
-        type_names=type_names,
-        ancestor_names=ancestor_names,
-        description=description,
-    )
+    return {
+        "qid": qid,
+        "types": direct_types,
+        "ancestor_types": ancestor_types,
+        "label": label,
+        "description": description,
+        "context_string": None,
+    }
+
+
+def _prediction_to_stored_row(prediction: Any) -> tuple[Any, ...] | None:
     if prediction.abstained or not prediction.coarse_type or not prediction.fine_type:
         return None
     retrieval = prediction.to_retrieval_fields(prefix="ner")
     return (
-        qid,
+        prediction.qid,
         prediction.coarse_type,
         prediction.fine_type,
         prediction.subtype,
@@ -251,6 +173,17 @@ def _classify_row(row: tuple[Any, ...]) -> tuple[Any, ...] | None:
         REQUIRED_CLASSIFIER_VERSION,
         _taxonomy_version(),
     )
+
+
+def _classify_row(row: tuple[Any, ...]) -> tuple[Any, ...] | None:
+    item = _row_to_classifier_item(row)
+    if item is None:
+        return None
+    prediction = _classifier().predict_batch(
+        [item],
+        cache_size=DEFAULT_BRANCH_CACHE_SIZE,
+    )[0]
+    return _prediction_to_stored_row(prediction)
 
 
 def _row_type_signature(
@@ -303,7 +236,16 @@ def _partition_rows_by_type_signature(
 def _classify_partition(
     rows: list[tuple[Any, ...]],
 ) -> list[tuple[Any, ...] | None]:
-    return [_classify_row(row) for row in rows]
+    items = [
+        item
+        for row in rows
+        if (item := _row_to_classifier_item(row)) is not None
+    ]
+    predictions = _classifier().predict_batch(
+        items,
+        cache_size=DEFAULT_BRANCH_CACHE_SIZE,
+    )
+    return [_prediction_to_stored_row(prediction) for prediction in predictions]
 
 
 def _ensure_schema(conn: Any, *, source_table: str, ner_table: str) -> None:
@@ -438,11 +380,55 @@ def _load_state(conn: Any, *, stage: str) -> tuple[str, int]:
     )
 
 
-def _reset_state(conn: Any, *, stage: str, ner_table: str) -> None:
+def _migrate_legacy_state(
+    conn: Any,
+    *,
+    source_table: str,
+    stage: str,
+) -> str | None:
+    current_last_qid, current_processed = _load_state(conn, stage=stage)
+    if current_last_qid or current_processed:
+        return None
+    for legacy_version in LEGACY_RESUME_VERSIONS:
+        legacy_stage = f"ner:{source_table}:{legacy_version}"
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO alpaca_pipeline_state (
+                    stage, last_qid, processed, metadata
+                )
+                SELECT %s, last_qid, processed, metadata || %s
+                FROM alpaca_pipeline_state
+                WHERE stage = %s
+                ON CONFLICT (stage) DO NOTHING
+                """,
+                (
+                    stage,
+                    Jsonb(
+                        {
+                            "classifier": CLASSIFIER_DISTRIBUTION,
+                            "classifier_version": REQUIRED_CLASSIFIER_VERSION,
+                            "resumed_from_classifier_version": legacy_version,
+                        }
+                    ),
+                    legacy_stage,
+                ),
+            )
+            migrated = cur.rowcount > 0
+        conn.commit()
+        if migrated:
+            return legacy_version
+    return None
+
+
+def _reset_state(conn: Any, *, source_table: str, ner_table: str) -> None:
     ner_ident = _quote_identifier(ner_table)
     with conn.cursor() as cur:
         cur.execute(f"TRUNCATE TABLE {ner_ident}")
-        cur.execute("DELETE FROM alpaca_pipeline_state WHERE stage = %s", (stage,))
+        cur.execute(
+            "DELETE FROM alpaca_pipeline_state WHERE stage LIKE %s",
+            (f"ner:{source_table}:%",),
+        )
     conn.commit()
 
 
@@ -702,7 +688,23 @@ def run(args: argparse.Namespace) -> int:
             )
             return 0
         if args.reset:
-            _reset_state(conn, stage=stage, ner_table=ner_table)
+            _reset_state(
+                conn,
+                source_table=source_table,
+                ner_table=ner_table,
+            )
+        else:
+            migrated_from = _migrate_legacy_state(
+                conn,
+                source_table=source_table,
+                stage=stage,
+            )
+            if migrated_from:
+                print(
+                    "Resuming exact-compatible classifier checkpoint:",
+                    f"from_version={migrated_from}",
+                    f"to_version={REQUIRED_CLASSIFIER_VERSION}",
+                )
         last_qid, processed = _load_state(conn, stage=stage)
         total = _count_items(
             conn,

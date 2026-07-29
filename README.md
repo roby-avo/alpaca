@@ -13,7 +13,7 @@ Deterministic entity lookup over Wikidata-style data using:
 
 The production pipeline streams a `.json.bz2` Wikidata dump into Postgres, resolves
 P31/P106 and P279 IDs to their stored labels, classifies every Q-item with the pinned
-`wikidata-ner-classifier==0.5.0`, and bulk-indexes the joined entity + NER records
+`wikidata-ner-classifier==0.5.1`, and bulk-indexes the joined entity + NER records
 into Elasticsearch.
 
 For a long-running VM build:
@@ -50,7 +50,7 @@ bloat.
 For inspection in Adminer, use the `entities_with_ner` view rather than the
 legacy type columns on `entities`. Its `ner_status` is `PENDING` during dump
 ingestion/classification, `CLASSIFIED` when `entity_ner` has a result, and
-`ABSTAINED` after the completed classifier pass when version 0.5.0 deliberately
+`ABSTAINED` after the completed classifier pass when version 0.5.1 deliberately
 does not assign a type. All long phases use `tqdm`; the 110M total is explicitly
 an estimate.
 

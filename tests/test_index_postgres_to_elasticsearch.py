@@ -99,7 +99,7 @@ class IndexPostgresToElasticsearchTests(unittest.TestCase):
             0.77,
             0.78,
             "wikidata-ner-classifier",
-            "0.5.0",
+            "0.5.1",
             "1.0.0/0.3.1",
         )
 
@@ -116,7 +116,7 @@ class IndexPostgresToElasticsearchTests(unittest.TestCase):
             ["CREATIVE_WORK", "FILM", "SWORD_AND_SANDAL_FILM"],
         )
         self.assertEqual(doc["ner_classifier_name"], "wikidata-ner-classifier")
-        self.assertEqual(doc["ner_classifier_version"], "0.5.0")
+        self.assertEqual(doc["ner_classifier_version"], "0.5.1")
         self.assertEqual(doc["ner_taxonomy_version"], "1.0.0/0.3.1")
 
     def test_build_index_payload_indexes_requested_identifier_fields(self) -> None:
