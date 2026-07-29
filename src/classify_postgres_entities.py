@@ -5,7 +5,9 @@ import json
 import os
 import re
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import replace
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from importlib.resources import files
@@ -118,6 +120,76 @@ def _predict_without_description(
     )
 
 
+def _predict_with_cached_branch(
+    *,
+    qid: str,
+    type_names: tuple[str, ...],
+    ancestor_names: tuple[str, ...],
+    description: str | None,
+) -> Any:
+    """Preserve classifier 0.5.0 output while caching its expensive branch scan.
+
+    In version 0.5.0 descriptions cannot influence coarse/fine branch selection;
+    they are only branch-local subtype/facet evidence. Reusing the type-only
+    prediction therefore avoids rescoring every taxonomy rule for repeated P31 /
+    P279 signatures. The refinement calls below are the same library methods
+    used by ``WikidataNERClassifier.predict`` after it selects a fine branch.
+    """
+    base = _predict_without_description(type_names, ancestor_names)
+    if base.abstained or not base.fine_type or not description:
+        return replace(base, qid=qid)
+
+    classifier = _classifier()
+    refinement_evidence = classifier._build_refinement_evidence(
+        type_names,
+        ancestor_names,
+        description,
+        None,
+    )
+    (
+        subtype,
+        subtype_is_generic,
+        subtype_hit,
+        subtype_clues,
+        facets,
+        facet_clues,
+        facet_hits,
+    ) = classifier._predict_subtype_and_facets(
+        base.fine_type,
+        refinement_evidence,
+    )
+    specific_type, specific_confidence, specific_types = (
+        classifier._compose_specific_types(
+            base.fine_type,
+            subtype,
+            subtype_is_generic,
+            subtype_hit,
+            facets,
+            facet_hits,
+            base.confidence,
+        )
+    )
+    refinement_sources = tuple(
+        dict.fromkeys(
+            clue.source
+            for clue in (*subtype_clues, *facet_clues)
+            if clue.source not in {"P31_label", "P279_label"}
+        )
+    )
+    return replace(
+        base,
+        qid=qid,
+        subtype=subtype,
+        specific_type=specific_type,
+        specific_types=specific_types,
+        facets=facets,
+        specific_type_confidence=specific_confidence,
+        subtype_clues=subtype_clues,
+        facet_clues=facet_clues,
+        refinement_sources=refinement_sources,
+    )
+
+
 def _clean_strings(raw: Any) -> list[str]:
     if not isinstance(raw, (list, tuple)):
         return []
@@ -147,16 +219,12 @@ def _classify_row(row: tuple[Any, ...]) -> tuple[Any, ...] | None:
     ]
     type_names = tuple(value["name"] for value in direct_types)
     ancestor_names = tuple(value["name"] for value in ancestor_types)
-    if description:
-        prediction = _classifier().predict(
-            qid=qid,
-            types=direct_types,
-            ancestor_types=ancestor_types,
-            label=label,
-            description=description,
-        )
-    else:
-        prediction = _predict_without_description(type_names, ancestor_names)
+    prediction = _predict_with_cached_branch(
+        qid=qid,
+        type_names=type_names,
+        ancestor_names=ancestor_names,
+        description=description,
+    )
     if prediction.abstained or not prediction.coarse_type or not prediction.fine_type:
         return None
     retrieval = prediction.to_retrieval_fields(prefix="ner")
@@ -618,6 +686,7 @@ def run(args: argparse.Namespace) -> int:
                     if invocation_limit > 0 and remaining <= 0:
                         break
                     fetch_size = min(int(args.batch_size), remaining)
+                    fetch_started = time.monotonic()
                     rows = _fetch_batch(
                         conn,
                         source_table=source_table,
@@ -625,9 +694,11 @@ def run(args: argparse.Namespace) -> int:
                         batch_size=fetch_size,
                         include_non_items=bool(args.include_non_items),
                     )
+                    fetch_seconds = time.monotonic() - fetch_started
                     if not rows:
                         exhausted = True
                         break
+                    classify_started = time.monotonic()
                     predictions = list(
                         executor.map(
                             _classify_row,
@@ -635,6 +706,7 @@ def run(args: argparse.Namespace) -> int:
                             chunksize=int(args.chunksize),
                         )
                     )
+                    classify_seconds = time.monotonic() - classify_started
                     classified_rows = [row for row in predictions if row is not None]
                     batch_processed = len(rows)
                     batch_classified = len(classified_rows)
@@ -643,6 +715,7 @@ def run(args: argparse.Namespace) -> int:
                     processed += batch_processed
                     classified_total += batch_classified
                     abstained_total += batch_abstained
+                    write_started = time.monotonic()
                     _write_batch(
                         conn,
                         ner_table=ner_table,
@@ -651,11 +724,15 @@ def run(args: argparse.Namespace) -> int:
                         processed=processed,
                         classified_rows=classified_rows,
                     )
+                    write_seconds = time.monotonic() - write_started
                     progress.update(batch_processed)
                     progress.set_postfix(
                         classified=classified_total,
                         abstained=abstained_total,
                         last_qid=last_qid,
+                        fetch_s=f"{fetch_seconds:.1f}",
+                        classify_s=f"{classify_seconds:.1f}",
+                        write_s=f"{write_seconds:.1f}",
                     )
         if exhausted:
             _mark_stage_complete(
