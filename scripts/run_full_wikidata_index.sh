@@ -12,13 +12,18 @@ ALPACA_FULL_PG_BATCH_SIZE="${ALPACA_FULL_PG_BATCH_SIZE:-5000}"
 ALPACA_FULL_NER_BATCH_SIZE="${ALPACA_FULL_NER_BATCH_SIZE:-20000}"
 ALPACA_FULL_ES_INDEX="${ALPACA_FULL_ES_INDEX:-alpaca-wikidata}"
 
-if [ ! -f "${ALPACA_FULL_DUMP_PATH}" ]; then
-  echo "ERROR: Wikidata dump not found: ${ALPACA_FULL_DUMP_PATH}" >&2
-  exit 1
-fi
-
 cd "${ROOT_DIR}"
 mkdir -p data/output data/postgres data/elasticsearch
+
+INGEST_MARKER="${ROOT_DIR}/data/output/.full-wikidata-ingest-complete"
+NER_MARKER="${ROOT_DIR}/data/output/.full-wikidata-ner-complete"
+ES_STARTED_MARKER="${ROOT_DIR}/data/output/.full-wikidata-es-started"
+ES_COMPLETE_MARKER="${ROOT_DIR}/data/output/.full-wikidata-es-complete"
+
+if [ ! -f "${INGEST_MARKER}" ] && [ ! -f "${ALPACA_FULL_DUMP_PATH}" ]; then
+  echo "ERROR: Wikidata dump not found and ingestion is incomplete: ${ALPACA_FULL_DUMP_PATH}" >&2
+  exit 1
+fi
 
 AVAILABLE_KB=$(df -Pk "${ROOT_DIR}" | awk 'NR == 2 {print $4}')
 REQUIRED_KB=$((ALPACA_FULL_MIN_FREE_GB * 1024 * 1024))
@@ -65,10 +70,6 @@ export ALPACA_ELASTIC_HEAP_SIZE="${ALPACA_ELASTIC_HEAP_SIZE:-16g}"
 
 POSTGRES_DSN="postgresql://postgres@postgres:5432/alpaca"
 ELASTICSEARCH_URL="http://elasticsearch:9200"
-INGEST_MARKER="${ROOT_DIR}/data/output/.full-wikidata-ingest-complete"
-NER_MARKER="${ROOT_DIR}/data/output/.full-wikidata-ner-complete"
-ES_STARTED_MARKER="${ROOT_DIR}/data/output/.full-wikidata-es-started"
-ES_COMPLETE_MARKER="${ROOT_DIR}/data/output/.full-wikidata-es-complete"
 
 echo "Full Wikidata pipeline configuration:"
 echo "  dump=${ALPACA_FULL_DUMP_PATH}"
