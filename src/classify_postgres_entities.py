@@ -253,6 +253,59 @@ def _classify_row(row: tuple[Any, ...]) -> tuple[Any, ...] | None:
     )
 
 
+def _row_type_signature(
+    row: tuple[Any, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return (
+        tuple(_clean_strings(row[4] if len(row) > 4 else ())),
+        tuple(_clean_strings(row[6] if len(row) > 6 else ())),
+    )
+
+
+def _partition_rows_by_type_signature(
+    rows: list[tuple[Any, ...]],
+    *,
+    workers: int,
+) -> list[list[tuple[Any, ...]]]:
+    """Keep repeated type signatures in the same balanced worker partition."""
+    partition_count = max(1, min(int(workers), len(rows)))
+    target_size = (len(rows) + partition_count - 1) // partition_count
+    grouped: dict[
+        tuple[tuple[str, ...], tuple[str, ...]],
+        list[tuple[Any, ...]],
+    ] = {}
+    for row in rows:
+        grouped.setdefault(_row_type_signature(row), []).append(row)
+
+    partitions: list[list[tuple[Any, ...]]] = [
+        [] for _ in range(partition_count)
+    ]
+    for signature_rows in sorted(
+        grouped.values(),
+        key=len,
+        reverse=True,
+    ):
+        offset = 0
+        while offset < len(signature_rows):
+            partition_index = min(
+                range(partition_count),
+                key=lambda index: len(partitions[index]),
+            )
+            available = target_size - len(partitions[partition_index])
+            take = min(len(signature_rows) - offset, max(1, available))
+            partitions[partition_index].extend(
+                signature_rows[offset : offset + take]
+            )
+            offset += take
+    return [partition for partition in partitions if partition]
+
+
+def _classify_partition(
+    rows: list[tuple[Any, ...]],
+) -> list[tuple[Any, ...] | None]:
+    return [_classify_row(row) for row in rows]
+
+
 def _ensure_schema(conn: Any, *, source_table: str, ner_table: str) -> None:
     source_ident = _quote_identifier(source_table)
     ner_ident = _quote_identifier(ner_table)
@@ -601,7 +654,10 @@ def parse_args() -> argparse.Namespace:
         "--chunksize",
         type=_positive_int,
         default=256,
-        help="Rows sent to each process-pool work unit (default: 256).",
+        help=(
+            "Deprecated compatibility option. Rows are now grouped by resolved "
+            "type signature into one balanced partition per worker."
+        ),
     )
     parser.add_argument(
         "--limit",
@@ -699,13 +755,19 @@ def run(args: argparse.Namespace) -> int:
                         exhausted = True
                         break
                     classify_started = time.monotonic()
-                    predictions = list(
-                        executor.map(
-                            _classify_row,
-                            rows,
-                            chunksize=int(args.chunksize),
-                        )
+                    partitions = _partition_rows_by_type_signature(
+                        rows,
+                        workers=int(args.workers),
                     )
+                    partition_predictions = executor.map(
+                        _classify_partition,
+                        partitions,
+                    )
+                    predictions = [
+                        prediction
+                        for partition in partition_predictions
+                        for prediction in partition
+                    ]
                     classify_seconds = time.monotonic() - classify_started
                     classified_rows = [row for row in predictions if row is not None]
                     batch_processed = len(rows)

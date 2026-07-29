@@ -5,6 +5,7 @@ import unittest
 from src.classify_postgres_entities import (
     REQUIRED_CLASSIFIER_VERSION,
     _classify_row,
+    _partition_rows_by_type_signature,
     _predict_with_cached_branch,
     _predict_without_description,
 )
@@ -84,6 +85,41 @@ class ClassifyPostgresEntitiesTests(unittest.TestCase):
         cache = _predict_without_description.cache_info()
         self.assertEqual(cache.misses, 1)
         self.assertEqual(cache.hits, 2)
+
+    def test_batches_are_balanced_without_splitting_normal_signature_groups(self) -> None:
+        rows = [
+            (
+                f"Q{index}",
+                f"Film {index}",
+                f"{1960 + index} documentary film",
+                ["Q11424"],
+                ["film"],
+                [],
+                [],
+            )
+            for index in range(3)
+        ]
+        rows.extend(
+            (
+                f"Q{index + 3}",
+                f"City {index}",
+                "city in Europe",
+                ["Q515"],
+                ["city"],
+                [],
+                [],
+            )
+            for index in range(3)
+        )
+
+        partitions = _partition_rows_by_type_signature(rows, workers=2)
+
+        self.assertEqual([len(partition) for partition in partitions], [3, 3])
+        signatures_per_partition = [
+            {tuple(row[4]) for row in partition}
+            for partition in partitions
+        ]
+        self.assertTrue(all(len(signatures) == 1 for signatures in signatures_per_partition))
 
 
 if __name__ == "__main__":
