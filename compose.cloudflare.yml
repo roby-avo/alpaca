@@ -1,0 +1,10 @@
+services:
+  api:
+    networks:
+      - default
+      - cloudflare
+
+networks:
+  cloudflare:
+    name: cloudflare
+    external: true
