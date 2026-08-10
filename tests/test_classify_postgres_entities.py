@@ -5,7 +5,9 @@ import unittest
 from src.classify_postgres_entities import (
     REQUIRED_CLASSIFIER_VERSION,
     _classify_row,
+    _normalize_required_type_qid,
     _partition_rows_by_type_signature,
+    _stage_name,
 )
 from wikidata_ner import WikidataNERClassifier
 
@@ -34,7 +36,36 @@ class ClassifyPostgresEntitiesTests(unittest.TestCase):
             ["CREATIVE_WORK", "FILM", "SWORD_AND_SANDAL_FILM"],
         )
         self.assertEqual(result[15], REQUIRED_CLASSIFIER_VERSION)
-        self.assertEqual(result[16], "1.0.0/0.3.1")
+        self.assertEqual(result[16], "1.0.0/0.4.0")
+
+    def test_human_occupations_become_specific_types(self) -> None:
+        result = _classify_row(
+            (
+                "Q7259",
+                "Ada Lovelace",
+                "English mathematician and writer",
+                ["Q5", "Q170790", "Q36180", "Q81096"],
+                ["human", "mathematician", "writer", "engineer"],
+                [],
+                [],
+            )
+        )
+
+        assert result is not None
+        self.assertEqual(result[1:3], ("PERSON", "HUMAN"))
+        self.assertEqual(result[4], "ENGINEER")
+        self.assertEqual(result[5], ["ENGINEER", "SCIENTIST", "WRITER"])
+        self.assertEqual(
+            result[7],
+            {"occupation": ("ENGINEER", "SCIENTIST", "WRITER")},
+        )
+
+    def test_targeted_stage_name_is_separate_from_full_refresh(self) -> None:
+        self.assertEqual(_normalize_required_type_qid("q5"), "Q5")
+        self.assertEqual(
+            _stage_name(source_table="entities", required_type_qid="Q5"),
+            f"ner:entities:{REQUIRED_CLASSIFIER_VERSION}:type:Q5",
+        )
 
     def test_classify_row_abstains_without_type_anchor(self) -> None:
         result = _classify_row(("Q999999999", "Unknown", "untyped item", [], [], [], []))

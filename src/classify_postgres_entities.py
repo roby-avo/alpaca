@@ -28,14 +28,18 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 CLASSIFIER_DISTRIBUTION = "wikidata-ner-classifier"
-REQUIRED_CLASSIFIER_VERSION = "0.5.1"
-LEGACY_RESUME_VERSIONS = ("0.5.0",)
+REQUIRED_CLASSIFIER_VERSION = "0.8.0"
+# Only versions with byte-for-byte equivalent classification semantics may be
+# resumed here. 0.8.0 changes HUMAN refinements, so older checkpoints are not
+# compatible and must not be migrated.
+LEGACY_RESUME_VERSIONS: tuple[str, ...] = ()
 DEFAULT_SOURCE_TABLE = "entities"
 DEFAULT_NER_TABLE = "entity_ner"
 DEFAULT_BATCH_SIZE = 20_000
 DEFAULT_BRANCH_CACHE_SIZE = 100_000
 DEFAULT_SIGNATURE_COST_WEIGHT = 64
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_QID_RE = re.compile(r"^Q[1-9][0-9]*$")
 _WORKER_CLASSIFIER: Any = None
 
 
@@ -66,6 +70,26 @@ def _quote_identifier(raw: str) -> str:
             f"Invalid SQL identifier '{raw}'. Use letters, digits, and underscores only."
         )
     return f'"{value}"'
+
+
+def _normalize_required_type_qid(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    value = raw.strip().upper()
+    if not value:
+        return None
+    if not _QID_RE.fullmatch(value):
+        raise ValueError(
+            f"Invalid required type QID '{raw}'. Expected a Wikidata QID such as Q5."
+        )
+    return value
+
+
+def _stage_name(*, source_table: str, required_type_qid: str | None) -> str:
+    stage = f"ner:{source_table}:{REQUIRED_CLASSIFIER_VERSION}"
+    if required_type_qid:
+        stage += f":type:{required_type_qid}"
+    return stage
 
 
 def _require_dependencies() -> Any:
@@ -261,7 +285,7 @@ def _classify_partition(
 def _ensure_schema(conn: Any, *, source_table: str, ner_table: str) -> None:
     source_ident = _quote_identifier(source_table)
     ner_ident = _quote_identifier(ner_table)
-    stage = f"ner:{source_table}:{REQUIRED_CLASSIFIER_VERSION}"
+    complete_stage_pattern = f"ner:{source_table}:%"
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -334,10 +358,7 @@ def _ensure_schema(conn: Any, *, source_table: str, ner_table: str) -> None:
                     CASE
                         WHEN e.qid NOT LIKE 'Q%' THEN 'NOT_APPLICABLE'
                         WHEN n.qid IS NOT NULL THEN 'CLASSIFIED'
-                        WHEN COALESCE(
-                            (state.metadata ->> 'complete')::boolean,
-                            FALSE
-                        ) THEN 'ABSTAINED'
+                        WHEN COALESCE(state.complete, FALSE) THEN 'ABSTAINED'
                         ELSE 'PENDING'
                     END AS ner_status,
                     n.coarse_type AS ner_coarse_type,
@@ -364,8 +385,13 @@ def _ensure_schema(conn: Any, *, source_table: str, ner_table: str) -> None:
                     e.updated_at
                 FROM {source_ident} AS e
                 LEFT JOIN {ner_ident} AS n ON n.qid = e.qid
-                LEFT JOIN alpaca_pipeline_state AS state
-                    ON state.stage = '{stage}';
+                LEFT JOIN LATERAL (
+                    SELECT BOOL_OR(
+                        COALESCE((metadata ->> 'complete')::boolean, FALSE)
+                    ) AS complete
+                    FROM alpaca_pipeline_state
+                    WHERE stage LIKE '{complete_stage_pattern}'
+                ) AS state ON TRUE;
 
                 COMMENT ON VIEW entities_with_ner IS
                     'Entities joined to the complete wikidata-ner-classifier '
@@ -431,22 +457,58 @@ def _migrate_legacy_state(
     return None
 
 
-def _reset_state(conn: Any, *, source_table: str, ner_table: str) -> None:
+def _reset_state(
+    conn: Any,
+    *,
+    source_table: str,
+    ner_table: str,
+    stage: str | None = None,
+    required_type_qid: str | None = None,
+) -> None:
     ner_ident = _quote_identifier(ner_table)
+    active_stage = stage or _stage_name(
+        source_table=source_table,
+        required_type_qid=required_type_qid,
+    )
     with conn.cursor() as cur:
-        cur.execute(f"TRUNCATE TABLE {ner_ident}")
-        cur.execute(
-            "DELETE FROM alpaca_pipeline_state WHERE stage LIKE %s",
-            (f"ner:{source_table}:%",),
-        )
+        if required_type_qid:
+            # A targeted refresh overwrites matching rows batch by batch. Keep
+            # the previous rows available until their replacements are ready.
+            cur.execute(
+                "DELETE FROM alpaca_pipeline_state WHERE stage = %s",
+                (active_stage,),
+            )
+        else:
+            cur.execute(f"TRUNCATE TABLE {ner_ident}")
+            cur.execute(
+                "DELETE FROM alpaca_pipeline_state WHERE stage LIKE %s",
+                (f"ner:{source_table}:%",),
+            )
     conn.commit()
 
 
-def _count_items(conn: Any, *, source_table: str, include_non_items: bool) -> int:
+def _count_items(
+    conn: Any,
+    *,
+    source_table: str,
+    include_non_items: bool,
+    required_type_qid: str | None = None,
+) -> int:
     source_ident = _quote_identifier(source_table)
-    where_sql = "" if include_non_items else "WHERE qid LIKE 'Q%'"
+    filters: list[str] = []
+    params: list[Any] = []
+    if not include_non_items:
+        filters.append("qid LIKE %s")
+        params.append("Q%")
+    if required_type_qid:
+        filters.append("%s = ANY(types)")
+        params.append(required_type_qid)
+    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
     with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {source_ident} {where_sql}")
+        cur.execute(
+            f"SELECT COUNT(*) FROM {source_ident} {where_sql}",
+            tuple(params),
+        )
         row = cur.fetchone()
     return int(row[0]) if row and isinstance(row[0], int) else 0
 
@@ -458,9 +520,11 @@ def _fetch_batch(
     last_qid: str,
     batch_size: int,
     include_non_items: bool,
+    required_type_qid: str | None = None,
 ) -> list[tuple[Any, ...]]:
     source_ident = _quote_identifier(source_table)
     item_filter = "" if include_non_items else "AND e.qid LIKE 'Q%%'"
+    type_filter = "AND %s = ANY(e.types)" if required_type_qid else ""
     sql = f"""
     SELECT
         e.qid,
@@ -483,11 +547,16 @@ def _fetch_batch(
     FROM {source_ident} AS e
     WHERE e.qid > %s
       {item_filter}
+      {type_filter}
     ORDER BY e.qid
     LIMIT %s
     """
+    params: list[Any] = [last_qid]
+    if required_type_qid:
+        params.append(required_type_qid)
+    params.append(int(batch_size))
     with conn.cursor() as cur:
-        cur.execute(sql, (last_qid, int(batch_size)))
+        cur.execute(sql, tuple(params))
         return list(cur.fetchall())
 
 
@@ -499,6 +568,7 @@ def _write_batch(
     last_qid: str,
     processed: int,
     classified_rows: list[tuple[Any, ...]],
+    processed_qids: list[str] | None = None,
 ) -> None:
     ner_ident = _quote_identifier(ner_table)
     with conn.cursor() as cur:
@@ -577,6 +647,16 @@ def _write_batch(
                     taxonomy_version = EXCLUDED.taxonomy_version,
                     updated_at = NOW()
                 """
+            )
+        classified_qids = [str(row[0]) for row in classified_rows]
+        if processed_qids:
+            cur.execute(
+                f"""
+                DELETE FROM {ner_ident}
+                WHERE qid = ANY(%s)
+                  AND NOT (qid = ANY(%s))
+                """,
+                (processed_qids, classified_qids),
             )
         cur.execute(
             """
@@ -671,6 +751,13 @@ def parse_args() -> argparse.Namespace:
         help="Optional number of rows to process in this invocation (0 = all remaining).",
     )
     parser.add_argument(
+        "--required-type-qid",
+        help=(
+            "Only classify entities whose stored P31/P106 type list contains "
+            "this QID. Q5 performs an efficient HUMAN-only refresh."
+        ),
+    )
+    parser.add_argument(
         "--include-non-items",
         action="store_true",
         help="Also run the item classifier on non-Q identifiers.",
@@ -692,9 +779,13 @@ def run(args: argparse.Namespace) -> int:
     pg = _require_dependencies()
     source_table = args.source_table.strip()
     ner_table = args.ner_table.strip()
+    required_type_qid = _normalize_required_type_qid(args.required_type_qid)
     _quote_identifier(source_table)
     _quote_identifier(ner_table)
-    stage = f"ner:{source_table}:{REQUIRED_CLASSIFIER_VERSION}"
+    stage = _stage_name(
+        source_table=source_table,
+        required_type_qid=required_type_qid,
+    )
 
     with pg.connect(resolve_postgres_dsn(args.postgres_dsn)) as conn:
         _ensure_schema(conn, source_table=source_table, ner_table=ner_table)
@@ -711,6 +802,8 @@ def run(args: argparse.Namespace) -> int:
                 conn,
                 source_table=source_table,
                 ner_table=ner_table,
+                stage=stage,
+                required_type_qid=required_type_qid,
             )
         else:
             migrated_from = _migrate_legacy_state(
@@ -729,6 +822,7 @@ def run(args: argparse.Namespace) -> int:
             conn,
             source_table=source_table,
             include_non_items=bool(args.include_non_items),
+            required_type_qid=required_type_qid,
         )
         invocation_start = processed
         invocation_limit = int(args.limit)
@@ -744,6 +838,7 @@ def run(args: argparse.Namespace) -> int:
             f"workers={args.workers}",
             f"batch_size={args.batch_size}",
             f"signature_cost_weight={args.signature_cost_weight}",
+            f"required_type_qid={required_type_qid or 'all'}",
             f"resume_last_qid={last_qid or 'n/a'}",
             f"resume_processed={processed}",
             f"estimated_total={total}",
@@ -771,6 +866,7 @@ def run(args: argparse.Namespace) -> int:
                         last_qid=last_qid,
                         batch_size=fetch_size,
                         include_non_items=bool(args.include_non_items),
+                        required_type_qid=required_type_qid,
                     )
                     fetch_seconds = time.monotonic() - fetch_started
                     if not rows:
@@ -808,6 +904,7 @@ def run(args: argparse.Namespace) -> int:
                         last_qid=last_qid,
                         processed=processed,
                         classified_rows=classified_rows,
+                        processed_qids=[str(row[0]) for row in rows],
                     )
                     write_seconds = time.monotonic() - write_started
                     progress.update(batch_processed)
