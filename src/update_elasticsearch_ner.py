@@ -140,9 +140,31 @@ def _fetch_batch(
         return list(cur.fetchall())
 
 
-def _row_to_update(row: Sequence[Any]) -> tuple[str, dict[str, Any]]:
+_NER_SOURCE_FIELDS = (
+    "coarse_type",
+    "fine_type",
+    "ner_subtype",
+    "ner_specific_type",
+    "ner_specific_types",
+    "ner_secondary_types",
+    "ner_facets",
+    "ner_specificity_level",
+    "ner_retrieval_path",
+    "ner_retrieval_key",
+    "ner_retrieval_tags",
+    "ner_confidence",
+    "ner_specific_type_confidence",
+    "ner_classifier_name",
+    "ner_classifier_version",
+    "ner_taxonomy_version",
+)
+
+
+def _row_to_update(row: Sequence[Any]) -> tuple[str, dict[str, Any] | None]:
     qid = str(row[0])
     classifier_version = row[15]
+    if classifier_version is None:
+        return qid, None
     if classifier_version != REQUIRED_CLASSIFIER_VERSION:
         raise RuntimeError(
             f"{qid} is not classified by {CLASSIFIER_DISTRIBUTION}=="
@@ -174,7 +196,7 @@ def _row_to_update(row: Sequence[Any]) -> tuple[str, dict[str, Any]]:
 
 def _bulk_update_payload(
     index_name: str,
-    updates: Sequence[tuple[str, dict[str, Any]]],
+    updates: Sequence[tuple[str, dict[str, Any] | None]],
 ) -> bytes:
     lines: list[str] = []
     for qid, doc in updates:
@@ -190,7 +212,18 @@ def _bulk_update_payload(
                 separators=(",", ":"),
             )
         )
-        lines.append(json.dumps({"doc": doc}, ensure_ascii=False, separators=(",", ":")))
+        body: dict[str, Any]
+        if doc is None:
+            body = {
+                "script": {
+                    "lang": "painless",
+                    "source": "for (field in params.fields) { ctx._source.remove(field); }",
+                    "params": {"fields": list(_NER_SOURCE_FIELDS)},
+                }
+            }
+        else:
+            body = {"doc": doc}
+        lines.append(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 

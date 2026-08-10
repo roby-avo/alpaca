@@ -55,6 +55,17 @@ class UpdateElasticsearchNERTests(unittest.TestCase):
         self.assertEqual(action["update"]["_id"], "Q7259")
         self.assertEqual(body, {"doc": {"ner_specific_type": "ENGINEER"}})
 
+    def test_bulk_payload_removes_stale_fields_for_abstentions(self) -> None:
+        payload = _bulk_update_payload(
+            "alpaca-wikidata",
+            [("Q1", None)],
+        ).decode("utf-8")
+        body = json.loads(payload.strip().splitlines()[1])
+
+        self.assertIn("script", body)
+        self.assertIn("ner_specific_types", body["script"]["params"]["fields"])
+        self.assertIn("coarse_type", body["script"]["params"]["fields"])
+
     def test_refuses_stale_classifier_rows(self) -> None:
         stale = (
             "Q7259",

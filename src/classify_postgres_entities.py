@@ -7,6 +7,7 @@ import re
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import replace
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from importlib.resources import files
@@ -41,6 +42,9 @@ DEFAULT_SIGNATURE_COST_WEIGHT = 64
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _QID_RE = re.compile(r"^Q[1-9][0-9]*$")
 _WORKER_CLASSIFIER: Any = None
+_WORKER_HUMAN_RULE: Any = None
+_WORKER_HUMAN_ANCHOR_RESULT: Any = None
+_WORKER_HUMAN_FAST_PATH_VALIDATED = False
 
 
 def _positive_int(raw: str) -> int:
@@ -280,6 +284,119 @@ def _classify_partition(
         cache_size=DEFAULT_BRANCH_CACHE_SIZE,
     )
     return [_prediction_to_stored_row(prediction) for prediction in predictions]
+
+
+def _human_primary_confidence(candidate: Any) -> float:
+    """Reproduce the library confidence formula when Q5 fixes the branch."""
+    score_component = min(1.0, float(candidate.score) / 18.0)
+    margin_component = min(1.0, max(0.0, float(candidate.score)) / 8.0)
+    exact_bonus = (
+        0.08
+        if any(
+            match.match_kind == "exact_strong_phrase"
+            for match in candidate.matches
+        )
+        else 0.0
+    )
+    return round(
+        min(0.99, 0.58 * score_component + 0.34 * margin_component + exact_bonus),
+        4,
+    )
+
+
+def _predict_human_item_fast(item: dict[str, Any]) -> Any:
+    """Run the pinned library's HUMAN rule and branch-local refinement only.
+
+    Q5 is an explicit HUMAN anchor. Scoring unrelated coarse/fine rules for
+    every distinct P106 signature is wasted work, while the occupation and
+    specific-type prediction still must use the library's own refinement
+    engine. Private methods are guarded by a per-worker equivalence check and
+    the package is pinned to 0.8.0.
+    """
+    global _WORKER_HUMAN_ANCHOR_RESULT, _WORKER_HUMAN_RULE
+    classifier = _classifier()
+    prepared = classifier._prepare_batch_item(item)
+    if _WORKER_HUMAN_RULE is None:
+        _WORKER_HUMAN_RULE = next(
+            rule
+            for rule in classifier._compiled
+            if rule.get("coarse_type") == "PERSON"
+            and rule.get("fine_type") == "HUMAN"
+        )
+    candidate = classifier._score_rule(
+        _WORKER_HUMAN_RULE,
+        prepared.direct_labels,
+        prepared.ancestor_labels,
+        prepared.optional_texts,
+    )
+    if (
+        not candidate.anchored
+        or candidate.score < candidate.minimum_score
+        or candidate.negative_matches
+    ):
+        return classifier.predict_batch([item], cache_size=DEFAULT_BRANCH_CACHE_SIZE)[0]
+
+    if _WORKER_HUMAN_ANCHOR_RESULT is None:
+        _WORKER_HUMAN_ANCHOR_RESULT = classifier._predict_primary_branch(
+            ("human",), ()
+        )
+    primary_result = replace(
+        _WORKER_HUMAN_ANCHOR_RESULT,
+        primary=candidate,
+        confidence=_human_primary_confidence(candidate),
+    )
+    return classifier._refine_primary_branch(
+        primary_result,
+        qid=prepared.qid,
+        direct_labels=prepared.direct_labels,
+        ancestor_labels=prepared.ancestor_labels,
+        description=prepared.description,
+        context_string=prepared.context_string,
+    )
+
+
+def _classify_human_partition(
+    rows: list[tuple[Any, ...]],
+) -> list[tuple[Any, ...] | None]:
+    global _WORKER_HUMAN_FAST_PATH_VALIDATED
+    items = [
+        item
+        for row in rows
+        if (item := _row_to_classifier_item(row)) is not None
+    ]
+    if items and not _WORKER_HUMAN_FAST_PATH_VALIDATED:
+        expected = _classifier().predict_batch(
+            [items[0]],
+            cache_size=DEFAULT_BRANCH_CACHE_SIZE,
+        )[0]
+        actual = _predict_human_item_fast(items[0])
+        hierarchy_fields = (
+            "coarse_type",
+            "fine_type",
+            "subtype",
+            "specific_type",
+            "specific_types",
+            "secondary_types",
+            "facets",
+            "specificity_level",
+            "retrieval_path",
+            "retrieval_key",
+            "retrieval_tags",
+            "abstained",
+        )
+        if any(
+            getattr(expected, field) != getattr(actual, field)
+            for field in hierarchy_fields
+        ):
+            raise RuntimeError(
+                "wikidata-ner-classifier HUMAN fast path failed its 0.8.0 "
+                "equivalence check."
+            )
+        _WORKER_HUMAN_FAST_PATH_VALIDATED = True
+    return [
+        _prediction_to_stored_row(_predict_human_item_fast(item))
+        for item in items
+    ]
 
 
 def _ensure_schema(conn: Any, *, source_table: str, ner_table: str) -> None:
@@ -842,6 +959,12 @@ def run(args: argparse.Namespace) -> int:
             f"resume_last_qid={last_qid or 'n/a'}",
             f"resume_processed={processed}",
             f"estimated_total={total}",
+            f"branch_mode={'human-fast' if required_type_qid == 'Q5' else 'full-taxonomy'}",
+        )
+        classify_partition = (
+            _classify_human_partition
+            if required_type_qid == "Q5"
+            else _classify_partition
         )
         with ProcessPoolExecutor(max_workers=int(args.workers)) as executor:
             with tqdm(
@@ -879,7 +1002,7 @@ def run(args: argparse.Namespace) -> int:
                         signature_cost_weight=int(args.signature_cost_weight),
                     )
                     partition_predictions = executor.map(
-                        _classify_partition,
+                        classify_partition,
                         partitions,
                     )
                     predictions = [

@@ -7,6 +7,7 @@ from src.classify_postgres_entities import (
     _classify_row,
     _normalize_required_type_qid,
     _partition_rows_by_type_signature,
+    _predict_human_item_fast,
     _stage_name,
 )
 from wikidata_ner import WikidataNERClassifier
@@ -66,6 +67,35 @@ class ClassifyPostgresEntitiesTests(unittest.TestCase):
             _stage_name(source_table="entities", required_type_qid="Q5"),
             f"ner:entities:{REQUIRED_CLASSIFIER_VERSION}:type:Q5",
         )
+
+    def test_human_fast_path_matches_library_hierarchy(self) -> None:
+        item = {
+            "qid": "Q7259",
+            "types": [
+                {"id": "Q5", "name": "human"},
+                {"id": "Q170790", "name": "mathematician"},
+                {"id": "Q36180", "name": "writer"},
+                {"id": "Q81096", "name": "engineer"},
+            ],
+            "description": "English mathematician and writer",
+        }
+        expected = WikidataNERClassifier().predict_batch([item])[0]
+        actual = _predict_human_item_fast(item)
+
+        for field in (
+            "coarse_type",
+            "fine_type",
+            "subtype",
+            "specific_type",
+            "specific_types",
+            "facets",
+            "specificity_level",
+            "retrieval_path",
+            "retrieval_key",
+            "retrieval_tags",
+            "abstained",
+        ):
+            self.assertEqual(getattr(actual, field), getattr(expected, field), field)
 
     def test_classify_row_abstains_without_type_anchor(self) -> None:
         result = _classify_row(("Q999999999", "Unknown", "untyped item", [], [], [], []))
